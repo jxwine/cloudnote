@@ -1,0 +1,322 @@
+# 云笔记 CloudNote
+
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![Node](https://img.shields.io/badge/node-%E2%89%A524-brightgreen.svg)](https://nodejs.org/)
+[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Web-lightgrey.svg)](#)
+
+[English](README.en.md) | **简体中文**
+
+自托管的桌面云笔记：左侧目录树、中间编辑器、右侧自动大纲，多端实时同步。
+
+数据全在你自己的服务器上——一个 Node 进程加一个 SQLite 文件，没有原生模块、
+没有外部数据库、没有第三方服务。
+
+![界面](screenshot-light.png)
+
+## 它能做什么
+
+- **三栏界面**，左右两栏都能收起，宽度可拖
+- **实时同步**：WebSocket 推送，另一端在看就热更新，在写就把云端那版归档成冲突副本，两份都不丢
+- **离线可用**：断网期间照常编辑，恢复连接后重放队列并增量对账
+- **Markdown 式编辑**：Tiptap/ProseMirror，输入即时生效，选中浮出格式栏，图片粘贴/拖入即传
+- **组织**：目录树拖拽归档与同级排序、标签交叉分类、全文搜索、`Ctrl+P` 快速跳转
+- **兜底**：软删除回收站、自动版本快照与恢复、Markdown 导出
+- **网页版**：同一份前端代码，浏览器直接用，和桌面端实时互通
+
+## 技术栈
+
+| | |
+|---|---|
+| 桌面端 | Electron + electron-vite + React 18 + TypeScript |
+| 编辑器 | Tiptap 3（ProseMirror） |
+| 服务端 | Fastify 5 + `node:sqlite`（Node 24 内置）+ `@fastify/websocket` |
+| 同步 | 每篇笔记单调递增 `version` 做乐观锁，每账号 `seq` 游标做增量拉取 |
+
+## 快速开始
+
+```bash
+npm run install:all   # 安装服务端与客户端依赖
+npm run dev           # 同时启动同步服务和桌面客户端
+```
+
+首次打开点「创建一个」注册账号即可。服务默认跑在 `http://localhost:4471`，
+想连自建服务器时在登录页点「换一个同步服务」填地址。
+
+单独启动：
+
+```bash
+npm run server        # 只跑同步服务
+npm run app           # 只跑桌面客户端
+npm test              # 服务端端到端测试（51 项）
+npm run dist          # 打包 Windows 安装程序到 app/release
+```
+
+## 结构
+
+```
+note/
+├── server/           同步服务：Fastify + node:sqlite + WebSocket
+│   ├── src/db.js       表结构、事务、每用户单调递增的变更序号
+│   ├── src/uploads.js  图片落盘与读取
+│   ├── src/auth.js     注册登录、JWT、鉴权钩子
+│   ├── src/routes.js   目录与笔记接口，版本乐观锁
+│   ├── src/hub.js      按账号分组的 WebSocket 广播
+│   └── test/e2e.js     端到端测试
+└── app/              Electron 客户端
+    ├── src/main/       主进程：窗口、主题、打包版内置服务
+    ├── src/preload/    渲染进程与主进程之间的安全桥
+    └── src/renderer/
+        ├── lib/sync.ts     同步引擎：防抖保存、冲突归档、离线队列
+        ├── lib/store.ts    全局状态与本地缓存
+        ├── lib/outline.ts  标题提取与滚动定位
+        ├── lib/images.ts   图片上传（粘贴 / 拖入 / 选择文件）
+        └── components/     三栏界面
+```
+
+## 目录树
+
+新建目录和子目录、重命名、删除，右键或行尾的按钮都能操作。
+
+拖拽按光标落在行内的高度决定意图：
+
+- **贴上下边缘** → 排到那一项的前面 / 后面，同级重新排序，出现一条带圆点的插入线
+- **落在目录中间** → 放进这个目录，整行会圈一个描边
+- **拖到列表空白处** → 移出目录，回到根层级
+- 拖着悬停在折叠的目录上一会儿，它会自动展开，方便往深处放
+
+目录不能拖进自己的子目录里。排序结果会同步到所有设备。
+
+## 标签、回收站与历史
+
+**标签**：笔记标题上方可以加标签，输入时会提示已用过的标签，免得同一个概念写出好几种。
+侧栏「标签」页签列出所有标签和各自的篇数，点一个就只看它；从笔记里点标签同样能筛。
+目录是单一归属，标签用来做交叉分类。
+
+![标签](screenshot-tags.png)
+
+**回收站**：删除是软删除，笔记先进回收站。标题栏的回收站按钮进去（带待清理篇数），
+可以放回去，也可以彻底删除（不可撤销）。再点一次按钮退回笔记列表。
+
+![回收站](screenshot-trash.png)
+
+**历史版本**：正文改动会自动留存快照——每隔几分钟最多一版，每篇保留最近 40 版，
+所以连续打字不会把历史刷满。笔记右上角「历史版本」可以逐版预览并恢复；
+恢复时当前内容也会存成一版，随时能退回来。
+
+**导出**：单篇（笔记右键 → 导出为 Markdown）、按目录（目录右键 → 导出这个目录）、
+全部（侧栏顶部的导出按钮）。批量导出会按笔记原来的目录层级铺开成文件夹，同名笔记自动加序号。
+
+## 查找与替换
+
+在编辑器里按 `Ctrl+F`（或 `Ctrl+H`）打开，查找和替换在同一个条里，不分两种模式。
+打开时如果正文里有选中的文字，会自动拿它当查找词；已经开着时再按一次，查找词会跟着
+当前选中的内容更新。
+
+![查找替换](screenshot-find.png)
+
+| 操作 | 快捷键 |
+|---|---|
+| 下一处 | `Enter` |
+| 上一处 | `Shift+Enter` |
+| 关闭 | `Esc` |
+
+命中处全部标黄，当前那一处用强调色标出并自动滚到视野中央，右侧显示 `3/12` 这样的计数。
+「替换」只改当前一处，「全部替换」改完会提示替换了多少处。关闭时高亮自动清除。
+
+这只在当前这篇笔记里找；跨笔记检索用左上角的搜索框。
+
+## 快速跳转与搜索
+
+`Ctrl+P` 打开快速跳转，输入标题片段即可。匹配是**跳字**的——只要你敲的字按顺序出现在标题里
+就算命中，不必连续，所以敲 `同纪` 就能找到「同步方案评审纪要」。上下键选，回车打开。
+
+![快速跳转](screenshot-jump.png)
+
+## 搜索
+
+![搜索](screenshot-search.png)
+
+在左上角搜索框输入即可全文检索，标题和正文都算。结果按相关度排：标题命中的排在最前，
+其次看正文里命中的次数，最后按修改时间。
+
+每条结果给出命中处的上下文（关键词标黄）、笔记所在的目录路径和修改日期，右上角的数字
+是这篇里命中了多少处。点一条就打开那篇笔记，正文里所有命中都标黄，页面直接定位到第一处——
+落点那一处用强调色实心标出，和其余命中区分开。清空搜索框，高亮随之消失。
+
+## 同步是怎么工作的
+
+**保存**：编辑停顿 700ms 后自动提交，`Ctrl+S` 立即提交。不是每敲一个字发一次请求——
+连续打字时定时器一直顺延，只有停手才发；但也不会无限顺延，同一篇最多攒 5 秒就强制落一次，
+免得一口气写十分钟服务器上什么都没有。同一篇同时只允许一个请求在途，中途的改动合并到下一次，
+不会出现两个请求带着同样的版本号撞成冲突。
+
+每条笔记带一个单调递增的 `version`，提交时把手上这份的版本号一起发给服务端。
+
+**推送**：服务端写库成功后，通过 WebSocket 把新内容推给同账号的其他设备，
+发起方自己不会收到回声。
+
+**冲突**：两端同时改一篇笔记时，规则是 **本地编辑永远保留，云端版本完整归档**。
+
+- 对方改动到达时，如果你没在编辑这篇 → 正文直接热更新，你正看着就能看到变化。
+- 如果你正在编辑 → 你的内容原样不动，对方那一版被存成一条「XXX（云端版本 时间）」
+  笔记出现在同一目录下，编辑区上方给出提示，点提示可以直接跳过去对照。
+- 60 秒内的连续冲突复用同一条副本，不会刷屏。
+
+![冲突副本](screenshot-conflict.png)
+
+这样两个版本都不会丢，合并与否由你自己决定。
+
+**离线**：断网时新建、删除、移动进本地队列并持久化，正文改动留在内存里；
+恢复连接后先重放队列，再补发正文，最后做一次增量拉取对账。
+增量拉取靠每用户的 `seq` 游标，只取变化的部分。
+
+## 标题
+
+编辑区顶部是笔记标题，它是笔记自己的属性，不算正文的一部分（所以不会出现在大纲里）。
+
+规则是 **标题为空才自动取，取到就不再动**。自动取的时机只有两个：
+
+- 按 `Ctrl+S`
+- 切走这篇笔记，或者关掉窗口
+
+平时打字完全不碰标题——正文首行在敲的过程中是「h」「he」这种中间态，那时取等于把
+半成品当成了笔记名。等你按保存或者写完离开，内容定下来了再取，取到就固定住，之后
+无论怎么改正文都不会被顶掉。想重新取就把标题清空，下一次保存会补上。
+
+中文输入法的合成期同样不落库，拼音打到一半不会被存成标题。
+
+侧栏右键「重命名」和这个标题框是同一个东西，改哪边都一样。
+
+## 编辑器
+
+基于 Tiptap（ProseMirror），Markdown 式输入即时生效：
+
+| 输入 | 结果 | | 输入 | 结果 |
+|---|---|---|---|---|
+| `# ` | 一级标题 | | `> ` | 引用 |
+| `## ` | 二级标题 | | ` ``` ` | 代码块（含高亮） |
+| `- ` | 无序列表 | | `1. ` | 有序列表 |
+| `[] ` | 待办项 | | `---` | 分隔线 |
+
+**选中文字**会浮出一条格式栏，就地改格式，不用把手移回顶部：
+
+![浮动格式栏](screenshot-bubble.png)
+
+顶部工具栏有同样这批能力，外加列表、引用和插入菜单。清除格式排在最前面。
+
+按住 `Ctrl` 单击链接会交给系统浏览器打开；不按修饰键就是普通的放光标编辑。
+只有 http/https/mailto/ftp 会被放行，笔记里混进 `javascript:` 之类打不开。
+
+插入链接时，如果选中的文本本身就是个网址或邮箱，地址会自动填好——
+`www.baidu.com` 补成 `https://www.baidu.com`，`someone@example.com` 补成
+`mailto:` 形式，直接回车即可。
+
+**图片**支持直接粘贴、拖入，或从插入菜单选文件上传。图片一律先传到服务端再
+插入链接，不会以 base64 塞进正文——内嵌会让笔记体积暴涨，每次保存都要把整张
+图重传一遍。单张上限 10MB，支持 png / jpg / gif / webp / svg / bmp / avif。
+
+正文宽度跟着窗口走，左右留白按比例增长。右侧大纲实时跟随正文标题，
+点击跳转，滚动时高亮当前位置。
+
+界面跟随系统主题，也可以在右上角菜单里手动切换：
+
+![深色主题](screenshot-dark.png)
+
+## 快捷键
+
+| 快捷键 | 作用 |
+|---|---|
+| `Ctrl+N` | 新建笔记 |
+| `Ctrl+P` | 快速跳转到某篇笔记 |
+| `Ctrl+S` | 立即保存 |
+| `Ctrl+\` | 开合左侧目录栏 |
+| `Ctrl+Shift+/` | 开合右侧大纲栏 |
+| `Ctrl+B` / `Ctrl+I` / `Ctrl+U` | 加粗 / 斜体 / 下划线 |
+| `Ctrl+K` | 插入链接 |
+| `Ctrl+F` | 查找替换 |
+| `Ctrl` + 单击链接 | 用系统浏览器打开 |
+
+## 数据清理
+
+删除是软删除——多端同步靠这条记录传递「它没了」，图片也不会跟着笔记删（笔记可能被撤销恢复）。
+时间久了这些会攒下来，用清理工具收一收：
+
+```bash
+cd server
+npm run gc                      # 只报告，不动手
+npm run gc -- --apply           # 真正清理
+npm run gc -- --days 90 --apply # 软删超过 90 天的才清（默认 30 天）
+```
+
+它会硬删过期的软删记录、删掉没有任何笔记引用的图片，最后压缩数据库。
+
+## 部署到自己的服务器
+
+**装了宝塔面板的话，看 [deploy/README.md](deploy/README.md)**——那里有从装 Node 到配 HTTPS
+的完整步骤，以及一条命令搞定服务端的脚本。
+
+手动部署也简单，服务端是个普通 Node 进程（要 **Node 24+**，因为用了内置的 SQLite）：
+
+```bash
+cd server && npm install --omit=dev
+CLOUDNOTE_SECRET=换成随机密钥 PORT=4471 npm start
+```
+
+也可以把配置写进 `server/.env`，服务启动时会自己读。
+
+| 环境变量 | 说明 | 默认 |
+|---|---|---|
+| `PORT` | 监听端口 | `4471` |
+| `HOST` | 监听地址 | `0.0.0.0` |
+| `CLOUDNOTE_SECRET` | JWT 签名密钥，**上线务必修改** | 开发用默认值 |
+| `CLOUDNOTE_DB` | SQLite 文件路径 | `server/data/cloudnote.db` |
+| `CLOUDNOTE_UPLOADS` | 图片存放目录 | `server/data/uploads` |
+| `CLOUDNOTE_AUTH_LIMIT_ID` | 单账号五分钟内允许的登录失败次数 | `5` |
+| `CLOUDNOTE_AUTH_LIMIT_IP` | 单 IP 五分钟内允许的登录失败次数 | `30` |
+
+登录限流只统计**失败**，成功一次就清零，正常用户碰不到这条线。分账号和 IP 两个维度：
+前者挡住针对某个账号的撞库，后者挡住换邮箱的批量扫描，又不会因为同一出口下别人输错密码
+就把你锁在门外。上传另有每账号每分钟 60 张的限制。
+
+上传的图片按 `uploads/<用户 id>/<32 位随机名>` 存盘，读取地址不鉴权——
+文件名足够长，URL 本身就是凭证，这样 `<img src>` 不必携带登录头。
+放公网时注意这一点：拿到链接的人就能看到那张图。
+
+公网部署建议放在 HTTPS 反向代理后面，并确保代理转发 WebSocket 升级请求
+（Nginx 需要 `proxy_set_header Upgrade $http_upgrade;` 与 `Connection "upgrade"`）。
+客户端登录页把地址填成 `https://你的域名` 即可，WebSocket 会自动走 `wss://`。
+
+想让客户端装上就默认连你的服务器，打包时注入地址：
+
+```bash
+cd app && VITE_CLOUDNOTE_SERVER=https://note.example.com npm run dist
+```
+
+## 参与
+
+欢迎提 Issue 和 PR。改动前建议先跑一遍测试：
+
+```bash
+npm test          # 服务端端到端，51 项
+cd app && npx tsc --noEmit -p tsconfig.json && npm run lint
+```
+
+## 许可证
+
+[Apache License 2.0](LICENSE)
+
+```
+Copyright 2026 jiaxing
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+```

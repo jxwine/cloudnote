@@ -1,0 +1,28 @@
+# 依赖
+node_modules/
+
+# 构建产物
+app/out/
+app/dist/
+app/release/
+
+# 运行时数据：数据库、上传的图片，以及待上传到服务器的更新包
+server/data/
+cloudnote-update/
+*.zip
+
+# 密钥。setup.sh 会在服务器上生成，绝不要提交
+server/.env
+.env
+.env.*
+!.env.example
+
+# 编辑器 / 系统
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# 本地临时
+tasks/
+*.log

@@ -1,0 +1,17 @@
+{
+  "name": "cloudnote-workspace",
+  "version": "1.0.0",
+  "private": true,
+  "description": "云笔记 — Electron 桌面端 + Node 同步服务",
+  "scripts": {
+    "install:all": "npm --prefix server install && npm --prefix app install",
+    "server": "npm --prefix server start",
+    "app": "npm --prefix app run dev",
+    "dev": "concurrently -n server,app -c cyan,magenta \"npm run server\" \"npm run app\"",
+    "test": "npm --prefix server run test:e2e",
+    "dist": "npm --prefix app run dist"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0"
+  }
+}
