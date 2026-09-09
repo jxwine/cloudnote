@@ -35,11 +35,12 @@ discussions — and to anything said publicly on behalf of this project elsewher
 
 ## Reporting
 
-If you experience or witness a breach, open an issue to reach the maintainer
-([@jxwine](https://github.com/jxwine)).
+If you experience or witness a breach, reach the maintainer
+([@jxwine](https://github.com/jxwine)) either way:
 
-If the details are not something you want to post publicly, an issue saying only "I'd like to
-discuss something privately" is enough — the maintainer will arrange a private channel with you.
+- **Email jxwu0099@gmail.com** — use this when it involves a specific person, or anything you
+  would rather not post publicly
+- Or open an issue — fine for anything that can be discussed in the open
 
 Every report is taken seriously. The maintainer will protect the reporter's privacy and will not
 disclose their identity without consent.
