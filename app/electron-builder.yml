@@ -5,6 +5,8 @@ directories:
   output: release
 files:
   - out/**
+  # 托盘图标，主进程用 __dirname/../../build 取，dev 和打包后路径一致
+  - build/**
   - package.json
 win:
   target:

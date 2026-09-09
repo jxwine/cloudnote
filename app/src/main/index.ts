@@ -1,4 +1,4 @@
-import { app, shell, BrowserWindow, ipcMain, nativeTheme, dialog } from 'electron'
+import { app, shell, BrowserWindow, ipcMain, nativeTheme, dialog, Tray, Menu } from 'electron'
 import { join, dirname } from 'node:path'
 import { fork, type ChildProcess } from 'node:child_process'
 import { existsSync, writeFileSync, mkdirSync } from 'node:fs'
@@ -15,6 +15,11 @@ if (isDev && process.env.CLOUDNOTE_DEBUG_PORT) {
 }
 let mainWindow: BrowserWindow | null = null
 let serverProc: ChildProcess | null = null
+let tray: Tray | null = null
+/** 真要退出了。关窗按钮会被拦下来改成隐藏，只有这个标记为真时才放行 */
+let quitting = false
+/** 第一次收进托盘时提示一下，否则用户会以为程序被自己关掉了 */
+let hintShown = false
 
 /**
  * 系统窗口按钮所在的那条 overlay 由主进程绘制，颜色必须和渲染进程标题栏的
@@ -49,6 +54,21 @@ function createWindow(): void {
 
   mainWindow.on('ready-to-show', () => mainWindow?.show())
 
+  // 点关闭不退出，收进托盘。真正退出走托盘菜单的「退出」，那条路会先把 quitting 置真。
+  // 托盘没建起来时不拦——否则窗口关不掉，用户只能去任务管理器。
+  mainWindow.on('close', (e) => {
+    if (quitting || !tray) return
+    e.preventDefault()
+    mainWindow?.hide()
+    if (!hintShown && process.platform === 'win32') {
+      hintShown = true
+      tray.displayBalloon({
+        title: '云笔记还在后台',
+        content: '窗口已收进托盘，点这里的图标可以随时打开。要彻底退出请右键图标选「退出」。',
+      })
+    }
+  })
+
   // 兜底：渲染进程迟迟没有首帧（dev server 未就绪、页面报错）时也要把窗口显示出来，
   // 否则进程活着却看不到任何界面，无从排查
   setTimeout(() => {
@@ -79,6 +99,51 @@ function createWindow(): void {
   }
 }
 
+/** 把窗口叫回前台：可能是隐藏了，也可能只是被压在别的窗口下面 */
+function showWindow(): void {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    createWindow()
+    return
+  }
+  if (!mainWindow.isVisible()) mainWindow.show()
+  if (mainWindow.isMinimized()) mainWindow.restore()
+  mainWindow.focus()
+}
+
+/**
+ * 系统托盘。
+ *
+ * 图标用 build/tray.png，Electron 会自动认 tray@2x.png 那份高分屏的。
+ * 路径相对 __dirname 取，dev 下是 app/out/main，打包后是 app.asar/out/main，
+ * 往上两级都能落到 build/，所以两边同一行代码。
+ */
+function createTray(): void {
+  const icon = join(__dirname, '../../build/tray.png')
+  if (!existsSync(icon)) {
+    console.error('[主进程] 托盘图标缺失，跳过托盘：' + icon)
+    return
+  }
+
+  tray = new Tray(icon)
+  tray.setToolTip('云笔记')
+  tray.setContextMenu(
+    Menu.buildFromTemplate([
+      { label: '打开云笔记', click: showWindow },
+      { type: 'separator' },
+      {
+        label: '退出',
+        click: () => {
+          quitting = true
+          app.quit()
+        },
+      },
+    ])
+  )
+  // Windows 上单击图标就该把窗口叫回来，不用去翻右键菜单
+  tray.on('click', showWindow)
+  tray.on('double-click', showWindow)
+}
+
 /**
  * 打包版自带同步服务：跟随应用启动本地 server，
  * 用户不配置远程地址时也能开箱即用（数据落在 userData 目录）。
@@ -98,7 +163,19 @@ function startBundledServer(): void {
   })
 }
 
+/**
+ * 只允许跑一个实例。
+ *
+ * 窗口收进托盘之后，用户很容易以为程序已经关了，又去点一次快捷方式。
+ * 没有这道锁就会起第二个实例——打包版还会再 fork 一个本地服务去抢 4471 端口。
+ * 后来的那个实例直接退出，把已有窗口叫到前台就行。
+ */
+const isPrimaryInstance = app.requestSingleInstanceLock()
+if (!isPrimaryInstance) app.quit()
+else app.on('second-instance', showWindow)
+
 app.whenReady().then(() => {
+  if (!isPrimaryInstance) return
   if (!isDev && __USE_BUNDLED_SERVER__) startBundledServer()
 
   ipcMain.handle('app:info', () => ({
@@ -153,17 +230,21 @@ app.whenReady().then(() => {
     return isDark ? 'dark' : 'light'
   })
 
+  createTray()
   createWindow()
 
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow()
-  })
+  app.on('activate', showWindow)
 })
 
 app.on('window-all-closed', () => {
+  // 有托盘时窗口是被隐藏而不是关闭，这个事件基本不会触发；
+  // 真触发了说明是退出流程走到这儿了，照常收尾。
   if (process.platform !== 'darwin') app.quit()
 })
 
 app.on('before-quit', () => {
+  quitting = true
   serverProc?.kill()
+  tray?.destroy()
+  tray = null
 })

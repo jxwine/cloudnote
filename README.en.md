@@ -25,6 +25,7 @@ No native modules, no external database, no third-party service.
 - **Organization**: drag notes into folders and reorder siblings, cross-cutting tags,
   full-text search, `Ctrl+P` quick jump
 - **Safety nets**: soft-delete trash, automatic version snapshots with restore, Markdown export
+- **Lives in the tray**: closing the window only hides it; the app keeps running and keeps syncing
 - **Web version**: same frontend code, usable straight from a browser, live-synced with the desktop app
 
 ## Tech stack
@@ -244,6 +245,21 @@ tracks headings live, jumps on click, and highlights your position as you scroll
 The interface follows the system theme and can also be switched manually from the top-right menu:
 
 ![Dark theme](screenshot-dark.png)
+
+## Window and tray
+
+The close button in the title bar **does not quit the app** — it hides the window to the system
+tray. The WebSocket stays connected, so changes made on other devices still arrive, and reopening
+the window does not have to refetch everything.
+
+- **Click** the tray icon → bring the window back
+- **Right-click** the tray icon → "打开云笔记" (Open) / "退出" (Quit). Quitting for real goes through here.
+
+A balloon tip appears the first time the window is tucked away, so it is not mistaken for a crash.
+
+Only one instance runs at a time. Clicking the desktop shortcut again while the window is hidden
+brings the existing window forward instead of starting a second copy — otherwise a packaged build
+would spawn a second bundled server fighting over the same port.
 
 ## Keyboard shortcuts
 
