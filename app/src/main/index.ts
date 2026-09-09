@@ -1,4 +1,4 @@
-import { app, shell, BrowserWindow, ipcMain, nativeTheme, dialog, Tray, Menu } from 'electron'
+import { app, shell, BrowserWindow, ipcMain, nativeTheme, dialog, Tray, Menu, net } from 'electron'
 import { join, dirname, basename } from 'node:path'
 import { fork, type ChildProcess } from 'node:child_process'
 import { existsSync, writeFileSync, mkdirSync, createWriteStream, rmSync } from 'node:fs'
@@ -234,7 +234,20 @@ app.whenReady().then(() => {
    * 也不能把一个来路不明的 exe 递给他去双击。
    */
   ipcMain.handle('update:download', async (_e, url: string, sha256: string) => {
-    const res = await fetch(url)
+    /*
+     * 必须用 Electron 的 net.fetch，不能用 Node 内置的 fetch。
+     *
+     * 后者走 undici，不认 Windows 的系统代理，也不读系统证书库。装了代理软件的机器上
+     * 它会直连一个被劫持的地址，报一句没头没脑的「fetch failed」——而渲染进程走的是
+     * Chromium 网络栈，同一个域名好好的，于是「版本信息拿得到、包下不下来」。
+     * net.fetch 用的就是 Chromium 那一套，和渲染进程行为一致。
+     */
+    let res: Response
+    try {
+      res = await net.fetch(url)
+    } catch (err) {
+      throw new Error(`连不上服务器：${err instanceof Error ? err.message : '未知错误'}`)
+    }
     if (!res.ok || !res.body) throw new Error(`下载失败（${res.status}）`)
 
     const total = Number(res.headers.get('content-length') || 0)
