@@ -1371,9 +1371,9 @@ textarea {
 .swatches {
   position: fixed;
   z-index: 220;
-  display: grid;
-  grid-template-columns: repeat(5, 1fr);
-  gap: 5px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
   padding: 7px;
   border-radius: 9px;
   background: var(--raised);
@@ -1381,6 +1381,183 @@ textarea {
   box-shadow: var(--shadow-pop);
   animation: menu-in 0.11s var(--ease);
 }
+.swatches.is-custom {
+  width: 236px;
+  padding: 10px;
+}
+
+.swatch-grid {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 5px;
+}
+
+/* 通往完整取色板的入口。左边那个小方块是彩虹渐变，一眼能认出是「更多颜色」 */
+.swatch-more {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 6px;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  color: var(--text-2);
+  font: inherit;
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.swatch-more:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+.swatch-more-chip {
+  width: 14px;
+  height: 14px;
+  border-radius: 4px;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  background: conic-gradient(#e35c4d, #d8a13a, #cbbf35, #47a06e, #2f9d95, #4f92d6, #9a70cf, #e35c4d);
+}
+
+.swatches-foot {
+  display: flex;
+  justify-content: space-between;
+  gap: 6px;
+}
+.swatches-foot .btn-ghost {
+  height: 26px;
+  padding: 0 8px;
+  font-size: 12px;
+}
+
+/* ====== 自定义取色板 ====== */
+
+.spectrum {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  /* 面板里到处是拖拽，别让浏览器把它当成文本去选中 */
+  user-select: none;
+}
+
+.spectrum-sv {
+  position: relative;
+  height: 132px;
+  border-radius: 7px;
+  cursor: crosshair;
+  /* 底色是纯色相，上面叠白（横向饱和度）和黑（纵向明度），两层渐变就够了 */
+  background-image: linear-gradient(to top, #000, transparent),
+    linear-gradient(to right, #fff, transparent);
+}
+.spectrum-dot {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  margin: -6px 0 0 -6px;
+  border-radius: 50%;
+  border: 2px solid #fff;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+}
+
+.spectrum-sliders {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+.spectrum-tracks {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.spectrum-hue,
+.spectrum-alpha {
+  position: relative;
+  height: 11px;
+  border-radius: 6px;
+  cursor: ew-resize;
+}
+.spectrum-hue {
+  background: linear-gradient(to right, #f00, #ff0, #0f0, #0ff, #00f, #f0f, #f00);
+}
+/* 透明度条底下垫一层棋盘格，才看得出「透」到什么程度 */
+.spectrum-alpha {
+  background-color: #fff;
+  background-image: linear-gradient(45deg, #c9ccd1 25%, transparent 25%),
+    linear-gradient(-45deg, #c9ccd1 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #c9ccd1 75%),
+    linear-gradient(-45deg, transparent 75%, #c9ccd1 75%);
+  background-size: 8px 8px;
+  background-position: 0 0, 0 4px, 4px -4px, -4px 0;
+}
+.spectrum-alpha-fill {
+  position: absolute;
+  inset: 0;
+  border-radius: 6px;
+}
+.spectrum-knob {
+  position: absolute;
+  top: 50%;
+  width: 13px;
+  height: 13px;
+  margin: -6.5px 0 0 -6.5px;
+  border-radius: 50%;
+  border: 2px solid #fff;
+  background: transparent;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+}
+
+.spectrum-preview {
+  width: 30px;
+  height: 30px;
+  flex: 0 0 auto;
+  border-radius: 7px;
+  border: 1px solid var(--line);
+  background-color: #fff;
+}
+
+.spectrum-fields {
+  display: grid;
+  grid-template-columns: 1.9fr repeat(4, 1fr);
+  gap: 5px;
+}
+.spectrum-fields label {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+}
+.spectrum-fields input {
+  width: 100%;
+  min-width: 0;
+  height: 25px;
+  padding: 0 4px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--bg);
+  color: var(--text);
+  font: 11px var(--font-mono);
+  text-align: center;
+  outline: none;
+}
+.spectrum-fields label.is-num input {
+  font-family: var(--font-ui);
+  font-variant-numeric: tabular-nums;
+}
+.spectrum-fields input:focus {
+  border-color: var(--accent);
+}
+.spectrum-fields span {
+  color: var(--text-2);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+}
+
 
 /* 浮动条里的色板贴着按钮走，不能用 fixed（floating-ui 的 transform 会改变参照系）*/
 .swatches.is-anchored {

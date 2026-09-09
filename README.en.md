@@ -229,6 +229,11 @@ Built on Tiptap (ProseMirror), with Markdown-style input applied as you type:
 The top toolbar has the same capabilities plus lists, quotes and an insert menu.
 "Clear formatting" comes first.
 
+**Colors** come as a small preset set — the text colors are mid-tone, so a note stays legible in
+both light and dark themes. When the presets are not enough, "自定义颜色…" (Custom color) opens a
+full picker: a saturation/value field, a hue bar, an alpha bar, and HEX / RGBA number inputs.
+All four edit the same color and stay in sync. Text color and highlight share the picker.
+
 `Ctrl` + click on a link opens it in the system browser; without the modifier it just places the
 caret. Only http/https/mailto/ftp are allowed through, so a `javascript:` URL pasted into a note
 will not open.
