@@ -138,11 +138,43 @@ function UploadForm({ onDone }: { onDone: () => void }) {
   const inputRef = useRef<HTMLInputElement>(null)
   const showToast = useStore((s) => s.showToast)
 
+  const [dragging, setDragging] = useState(false)
+
   const pick = (f: File | null) => {
+    if (f && !/\.exe$/i.test(f.name)) {
+      setError(`只能上传 .exe 安装包，这个是「${f.name}」`)
+      return
+    }
     setFile(f)
     setError('')
     // 版本号能从文件名猜出来就填上，猜不出来让人自己写
     if (f && !version) setVersion(guessVersion(f.name))
+  }
+
+  /*
+   * 拖到窗口任意位置都别让浏览器接管——默认行为是直接打开那个文件，
+   * 等于把后台页面导航走，填了一半的更新说明全没了。
+   * 只 preventDefault、不 stopPropagation：拖拽区自己的 handler 在冒泡链上更靠前，照常触发。
+   */
+  useEffect(() => {
+    const swallow = (e: DragEvent) => e.preventDefault()
+    window.addEventListener('dragover', swallow)
+    window.addEventListener('drop', swallow)
+    return () => {
+      window.removeEventListener('dragover', swallow)
+      window.removeEventListener('drop', swallow)
+    }
+  }, [])
+
+  const onDrop = (e: React.DragEvent) => {
+    e.preventDefault()
+    setDragging(false)
+    const dropped = Array.from(e.dataTransfer.files)
+    if (dropped.length > 1) {
+      setError('一次只能传一个安装包')
+      return
+    }
+    if (dropped[0]) pick(dropped[0])
   }
 
   const submit = async (e: React.FormEvent) => {
@@ -177,19 +209,49 @@ function UploadForm({ onDone }: { onDone: () => void }) {
 
       {error && <p className="auth-error">{error}</p>}
 
+      <div
+        className={'admin-drop' + (dragging ? ' is-over' : '') + (file ? ' has-file' : '')}
+        onDragEnter={(e) => {
+          e.preventDefault()
+          if (!busy) setDragging(true)
+        }}
+        onDragOver={(e) => e.preventDefault()}
+        onDragLeave={(e) => {
+          // 拖过内部子元素时也会冒 dragleave，用 relatedTarget 判断是不是真的离开了整块区域
+          if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDragging(false)
+        }}
+        onDrop={busy ? undefined : onDrop}
+        onClick={() => !busy && inputRef.current?.click()}
+        role="button"
+        tabIndex={0}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') inputRef.current?.click()
+        }}
+      >
+        <input
+          id="rel-file"
+          ref={inputRef}
+          type="file"
+          accept=".exe"
+          hidden
+          disabled={busy}
+          onChange={(e) => pick(e.target.files?.[0] ?? null)}
+        />
+        <IconUpload size={22} />
+        {file ? (
+          <>
+            <b className="admin-drop-name">{file.name}</b>
+            <span className="admin-drop-hint">{formatBytes(file.size)} · 点这里或再拖一个换掉</span>
+          </>
+        ) : (
+          <>
+            <b className="admin-drop-name">把安装包拖到这里</b>
+            <span className="admin-drop-hint">或者点一下选择文件 · 只收 .exe</span>
+          </>
+        )}
+      </div>
+
       <div className="admin-upload-grid">
-        <div className="field">
-          <label htmlFor="rel-file">安装包</label>
-          <input
-            id="rel-file"
-            ref={inputRef}
-            type="file"
-            accept=".exe"
-            disabled={busy}
-            onChange={(e) => pick(e.target.files?.[0] ?? null)}
-          />
-          {file && <span className="admin-file-meta">{formatBytes(file.size)}</span>}
-        </div>
         <div className="field">
           <label htmlFor="rel-version">版本号</label>
           <input

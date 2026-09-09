@@ -2690,14 +2690,58 @@ body.is-reflowing .bubble-bar {
   color: var(--text);
   font-size: 14px;
 }
+/* 拖拽上传区。file input 藏起来，点这块或按回车都会唤起系统选择框 */
+.admin-drop {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 14px;
+  padding: 26px 20px;
+  border: 1.5px dashed var(--line);
+  border-radius: 10px;
+  background: var(--bg);
+  color: var(--text-2);
+  text-align: center;
+  cursor: pointer;
+  transition: border-color 0.15s var(--ease), background 0.15s var(--ease);
+}
+.admin-drop:hover,
+.admin-drop:focus-visible {
+  border-color: var(--accent-line);
+  outline: none;
+}
+.admin-drop.is-over {
+  border-color: var(--accent);
+  border-style: solid;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.admin-drop.has-file {
+  border-style: solid;
+  border-color: var(--accent-line);
+}
+.admin-drop-name {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  /* 文件名可能很长，别把整块撑开 */
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.admin-drop.is-over .admin-drop-name {
+  color: var(--accent);
+}
+.admin-drop-hint {
+  font-size: 12px;
+}
+
 .admin-upload-grid {
   display: grid;
-  grid-template-columns: 2fr 1fr;
+  grid-template-columns: 220px;
   gap: 14px;
-}
-.admin-upload .field input[type='file'] {
-  padding: 6px 8px;
-  font-size: 12px;
 }
 .admin-upload textarea {
   width: 100%;
@@ -2728,5 +2772,8 @@ body.is-reflowing .bubble-bar {
   }
   .admin-upload-grid {
     grid-template-columns: 1fr;
+  }
+  .admin-drop {
+    padding: 20px 14px;
   }
 }
