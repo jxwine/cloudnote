@@ -389,11 +389,16 @@ cd app && VITE_CLOUDNOTE_SERVER=https://note.example.com npm run dist
 
 ## Contributing
 
-Issues and pull requests are welcome. Before submitting a change, please run:
+Issues and pull requests are welcome. Start with [CONTRIBUTING.en.md](CONTRIBUTING.en.md) for setup,
+layout and the self-check list; participation is covered by the
+[Code of Conduct](CODE_OF_CONDUCT.en.md).
+
+At minimum, run these after a change:
 
 ```bash
-npm test          # server end-to-end, 71 tests (admin ones need CLOUDNOTE_ADMINS=admin@test.local)
-cd app && npx tsc --noEmit -p tsconfig.json && npm run lint
+npm run server        # the e2e suite talks to a running server (use another terminal)
+npm test              # server end-to-end, 71 checks (admin ones need CLOUDNOTE_ADMINS=admin@test.local)
+cd app && npm run typecheck
 ```
 
 ## License

@@ -351,11 +351,15 @@ cd app && VITE_CLOUDNOTE_SERVER=https://note.example.com npm run dist
 
 ## 参与
 
-欢迎提 Issue 和 PR。改动前建议先跑一遍测试：
+欢迎提 Issue 和 PR。动手前请看 [CONTRIBUTING.md](CONTRIBUTING.md)，那里有环境要求、
+项目结构和自检清单；参与本项目也请遵守 [行为准则](CODE_OF_CONDUCT.md)。
+
+改动后至少跑这两条：
 
 ```bash
-npm test          # 服务端端到端，71 项（后台相关的需要 CLOUDNOTE_ADMINS=admin@test.local）
-cd app && npx tsc --noEmit -p tsconfig.json && npm run lint
+npm run server        # 端到端测试要先把服务跑起来（另开一个终端）
+npm test              # 服务端端到端，71 项（后台相关的需要 CLOUDNOTE_ADMINS=admin@test.local）
+cd app && npm run typecheck
 ```
 
 ## 许可证
