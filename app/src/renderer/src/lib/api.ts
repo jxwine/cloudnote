@@ -1,4 +1,4 @@
-import type { Folder, Note, Revision, User } from './types'
+import type { AdminStats, AdminUser, Folder, Note, Release, Revision, User } from './types'
 
 const LS = {
   server: 'cloudnote.server',
@@ -157,6 +157,78 @@ export const api = {
 
   /** 图片以 data URL 提交，返回的是服务端相对路径 */
   upload: (dataUrl: string) => request<{ url: string; bytes: number }>('POST', '/api/upload', { dataUrl }),
+
+  /* ---------- 客户端发布包（不需要登录） ---------- */
+
+  /** 最新已发布版本；没有任何版本时返回空对象 */
+  latestRelease: (platform = 'win32') =>
+    request<Release | Record<string, never>>('GET', `/api/update/latest?platform=${platform}`),
+
+  /* ---------- 后台管理（需要管理员） ---------- */
+
+  adminStats: () => request<AdminStats>('GET', '/api/admin/stats'),
+
+  adminUsers: (q = '', limit = 30, offset = 0) =>
+    request<{ total: number; limit: number; offset: number; users: AdminUser[] }>(
+      'GET',
+      `/api/admin/users?q=${encodeURIComponent(q)}&limit=${limit}&offset=${offset}`
+    ),
+
+  adminSetUser: (id: string, patch: { disabled?: boolean; password?: string }) =>
+    request<{ id: string; email: string; disabled: boolean }>('PATCH', `/api/admin/users/${id}`, patch),
+
+  /** 不可恢复。confirmEmail 必须和目标账号一致，服务端会再校验一次 */
+  adminDeleteUser: (id: string, confirmEmail: string) =>
+    request<{ ok: true; email: string }>('DELETE', `/api/admin/users/${id}`, { confirmEmail }),
+
+  adminReleases: () => request<{ releases: Release[] }>('GET', '/api/admin/releases'),
+
+  adminSetRelease: (id: string, patch: { notes?: string; published?: boolean }) =>
+    request<Release>('PATCH', `/api/admin/releases/${id}`, patch),
+
+  adminDeleteRelease: (id: string) =>
+    request<{ ok: true; version: string }>('DELETE', `/api/admin/releases/${id}`),
+}
+
+/**
+ * 上传安装包。
+ *
+ * 不走 request()：一是 body 是裸二进制不是 JSON，二是要上传进度——
+ * fetch 至今没有上传进度事件，只有 XMLHttpRequest 有。
+ * 元信息走请求头，中文文件名和换行的更新说明都要 encodeURIComponent。
+ */
+export function uploadRelease(
+  file: File,
+  meta: { version: string; notes: string; platform?: string },
+  onProgress?: (sent: number, total: number) => void
+): Promise<Release> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest()
+    xhr.open('POST', session.server + '/api/admin/releases')
+    xhr.setRequestHeader('content-type', 'application/octet-stream')
+    xhr.setRequestHeader('authorization', 'Bearer ' + session.token)
+    xhr.setRequestHeader('x-version', meta.version)
+    xhr.setRequestHeader('x-platform', meta.platform || 'win32')
+    xhr.setRequestHeader('x-filename', encodeURIComponent(file.name))
+    xhr.setRequestHeader('x-notes', encodeURIComponent(meta.notes))
+
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable) onProgress?.(e.loaded, e.total)
+    }
+    xhr.onload = () => {
+      let data: unknown = null
+      try {
+        data = JSON.parse(xhr.responseText)
+      } catch {
+        /* 服务端没返回 JSON，下面按状态码报错 */
+      }
+      if (xhr.status >= 200 && xhr.status < 300) resolve(data as Release)
+      else reject(new Error((data as { error?: string })?.error || `上传失败（${xhr.status}）`))
+    }
+    xhr.onerror = () => reject(new OfflineError())
+    xhr.onabort = () => reject(new Error('上传已取消'))
+    xhr.send(file)
+  })
 }
 
 /** 把服务端返回的相对路径拼成能直接放进 <img src> 的绝对地址 */

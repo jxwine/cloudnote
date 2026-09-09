@@ -1,8 +1,10 @@
 export interface User {
   id: string
   email: string
-  display_name: string
+  displayName: string
   seq: number
+  /** 由服务端按 .env 里的管理员名单判定，客户端只读 */
+  isAdmin: boolean
 }
 
 export interface Folder {
@@ -81,6 +83,42 @@ export interface PromptRequest {
   resolve: (value: string | null) => void
 }
 
+/** 客户端发布包。服务端 toRelease() 的返回结构 */
+export interface Release {
+  id: string
+  version: string
+  platform: string
+  filename: string
+  size: number
+  sha256: string
+  notes: string
+  published: boolean
+  createdAt: number
+  /** 相对路径，用 fileUrl() 拼成绝对地址 */
+  url: string
+}
+
+export interface AdminUser {
+  id: string
+  email: string
+  displayName: string
+  createdAt: number
+  lastActiveAt: number | null
+  disabled: boolean
+  notes: number
+  folders: number
+  online: number
+}
+
+export interface AdminStats {
+  users: number
+  notes: number
+  folders: number
+  onlineAccounts: number
+  onlineSockets: number
+  releases: number
+}
+
 declare global {
   interface Window {
     cloudnote?: {
@@ -92,6 +130,9 @@ declare global {
       ): Promise<{ ok: boolean; path?: string; count?: number }>
       reveal(path: string): Promise<void>
       onThemeChange(cb: (theme: 'light' | 'dark') => void): () => void
+      downloadUpdate(url: string, sha256: string): Promise<string>
+      installUpdate(path: string): Promise<void>
+      onUpdateProgress(cb: (p: { received: number; total: number }) => void): () => void
     }
   }
 }

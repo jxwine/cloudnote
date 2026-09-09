@@ -12,16 +12,35 @@ import { Toast } from './components/Toast'
 import { PromptDialog } from './components/PromptDialog'
 import { QuickJump } from './components/QuickJump'
 import { PasswordDialog } from './components/PasswordDialog'
+import { UpdateDialog } from './components/UpdateDialog'
+import { AdminApp } from './components/admin/AdminApp'
 import { exportAll } from '@/lib/export'
+import { isDesktop } from '@/lib/platform'
+import { checkUpdate, fetchLatestRelease, type UpdateInfo } from '@/lib/update'
 import { useContextMenu, type MenuAction } from './components/ContextMenu'
 import {
   IconCloud, IconPanelLeft, IconPanelRight, IconPlus,
   IconMoon, IconSun, IconLogout, IconMore, IconKey, IconExport, IconJump, IconTrash,
+  IconServer, IconDownload, IconRefresh,
 } from './components/Icons'
 
 export default function App() {
   const user = useStore((s) => s.user)
-  return user ? <Workspace /> : <LoginView />
+  const [route, setRoute] = useState(location.hash)
+
+  useEffect(() => {
+    const onHash = () => setRoute(location.hash)
+    window.addEventListener('hashchange', onHash)
+    return () => window.removeEventListener('hashchange', onHash)
+  }, [])
+
+  if (!user) return <LoginView />
+  // 后台只在网页端开放：它是运维用的，浏览器里开就行，没必要占客户端的入口。
+  // 非管理员就算手敲了 #/admin 也进不去；服务端接口另有一道 403，这里只是不给看界面。
+  if (route === '#/admin' && user.isAdmin && !isDesktop) {
+    return <AdminApp onExit={() => { location.hash = '' }} />
+  }
+  return <Workspace />
 }
 
 function Workspace() {
@@ -38,10 +57,12 @@ function Workspace() {
   const sidebarView = useStore((s) => s.sidebarView)
   const setSidebarView = useStore((s) => s.setSidebarView)
   const trashCount = useStore((s) => Object.values(s.notes).filter((n) => n.deleted).length)
+  const showToast = useStore((s) => s.showToast)
 
   const [editor, setEditor] = useState<Editor | null>(null)
   const [quickJump, setQuickJump] = useState(false)
   const [changePassword, setChangePassword] = useState(false)
+  const [update, setUpdate] = useState<UpdateInfo | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const menu = useContextMenu()
 
@@ -99,6 +120,44 @@ function Workspace() {
     return () => window.removeEventListener('keydown', onKey)
   }, [setPanel])
 
+  /* 更新检查：登录后过 8 秒静默查一次，之后每 6 小时一次。
+     查不到或者出错都不打扰用户——这个功能失败了不该弹窗。 */
+  useEffect(() => {
+    if (!isDesktop) return
+    let alive = true
+    const run = () =>
+      void checkUpdate().then((info) => {
+        if (alive && info) setUpdate(info)
+      })
+    const first = setTimeout(run, 8_000)
+    const timer = setInterval(run, 6 * 60 * 60 * 1000)
+    return () => {
+      alive = false
+      clearTimeout(first)
+      clearInterval(timer)
+    }
+  }, [])
+
+  /** 菜单里手动点的那次：查不到也要给个回应，不然像是没反应 */
+  const manualCheck = async () => {
+    const info = await checkUpdate()
+    if (info) setUpdate(info)
+    else showToast({ message: '已经是最新版本' })
+  }
+
+  /** 网页版下载客户端：现拿一次最新版本，直接交给浏览器下 */
+  const downloadClient = async () => {
+    const info = await fetchLatestRelease()
+    if (!info) {
+      showToast({ message: '服务器上还没有发布任何客户端版本' })
+      return
+    }
+    const a = document.createElement('a')
+    a.href = info.downloadUrl
+    a.download = info.filename
+    a.click()
+  }
+
   const accountActions: (MenuAction | 'separator')[] = [
     {
       label: '快速跳转…',
@@ -112,6 +171,13 @@ function Workspace() {
       onSelect: () => void exportAll(),
     },
     'separator',
+    ...(isDesktop
+      ? [{ label: '检查更新', icon: <IconRefresh size={15} />, onSelect: () => void manualCheck() }]
+      : [{ label: '下载 Windows 客户端', icon: <IconDownload size={15} />, onSelect: () => void downloadClient() }]),
+    ...(user?.isAdmin && !isDesktop
+      ? [{ label: '后台管理', icon: <IconServer size={15} />, onSelect: () => { location.hash = '#/admin' } }]
+      : []),
+    'separator' as const,
     {
       label: '修改密码',
       icon: <IconKey size={15} />,
@@ -187,13 +253,13 @@ function Workspace() {
         <SyncChip />
         <button
           className="icon-btn"
-          title={user?.display_name ?? '账号'}
+          title={user?.displayName ?? '账号'}
           onClick={(e) => menu.openAt(e.currentTarget, accountActions)}
         >
           <IconMore />
         </button>
-        {/* 给系统的窗口按钮留出位置 */}
-        <span style={{ width: 138, flex: '0 0 auto' }} />
+        {/* 给系统的窗口按钮留出位置。网页版没有那三个按钮，留了就是一块空白 */}
+        {isDesktop && <span style={{ width: 138, flex: '0 0 auto' }} />}
       </header>
 
       <div className="workspace">
@@ -225,6 +291,7 @@ function Workspace() {
       <PromptDialog />
       {quickJump && <QuickJump onClose={() => setQuickJump(false)} />}
       {changePassword && <PasswordDialog onClose={() => setChangePassword(false)} />}
+      {update && <UpdateDialog info={update} onClose={() => setUpdate(null)} />}
       {menu.node}
     </div>
   )

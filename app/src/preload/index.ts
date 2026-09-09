@@ -13,6 +13,17 @@ const api = {
   exportFolder: (files: { path: string; content: string }[]) =>
     ipcRenderer.invoke('export:folder', files) as Promise<{ ok: boolean; path?: string; count?: number }>,
   reveal: (path: string) => ipcRenderer.invoke('shell:reveal', path) as Promise<void>,
+
+  /** 下载安装包到临时目录，边下边校验 sha256，返回本地路径 */
+  downloadUpdate: (url: string, sha256: string) =>
+    ipcRenderer.invoke('update:download', url, sha256) as Promise<string>,
+  /** 拉起安装程序并退出应用 */
+  installUpdate: (path: string) => ipcRenderer.invoke('update:install', path) as Promise<void>,
+  onUpdateProgress: (cb: (p: { received: number; total: number }) => void) => {
+    const handler = (_e: unknown, p: { received: number; total: number }) => cb(p)
+    ipcRenderer.on('update:progress', handler)
+    return () => ipcRenderer.off('update:progress', handler)
+  },
   onThemeChange: (cb: (theme: 'light' | 'dark') => void) => {
     const handler = (_e: unknown, theme: 'light' | 'dark') => cb(theme)
     ipcRenderer.on('theme:changed', handler)

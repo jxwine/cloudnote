@@ -2,6 +2,7 @@ import { htmlToMarkdown, noteToMarkdownFile, safeFileName } from './markdown'
 import { folderPath } from './search'
 import { useStore } from './store'
 import type { Folder, Note } from './types'
+import { isDesktop, desktop } from './platform'
 
 /** 浏览器里没有 Electron 的保存对话框，退回到普通下载 */
 function browserDownload(name: string, content: string) {
@@ -19,16 +20,16 @@ export async function exportNote(note: Note) {
   const content = noteToMarkdownFile(note)
   const store = useStore.getState()
 
-  if (!window.cloudnote) {
+  if (!isDesktop) {
     browserDownload(name, content)
     return
   }
-  const res = await window.cloudnote.exportFile(name, content)
+  const res = await desktop!.exportFile(name, content)
   if (!res.ok) return
   store.showToast({
     message: `已导出到 ${res.path}`,
     actionLabel: '打开位置',
-    onAction: () => void window.cloudnote?.reveal(res.path!),
+    onAction: () => void desktop?.reveal(res.path!),
   })
 }
 
@@ -62,7 +63,7 @@ export async function exportAll(opts: { folderId?: string | null } = {}) {
     return { path, content: noteToMarkdownFile(note) }
   })
 
-  if (!window.cloudnote) {
+  if (!isDesktop) {
     // 浏览器里逐个下载不现实，合成一个文件
     browserDownload(
       '云笔记导出.md',
@@ -71,12 +72,12 @@ export async function exportAll(opts: { folderId?: string | null } = {}) {
     return
   }
 
-  const res = await window.cloudnote.exportFolder(files)
+  const res = await desktop!.exportFolder(files)
   if (!res.ok) return
   showToast({
     message: `已导出 ${res.count} 篇到 ${res.path}`,
     actionLabel: '打开位置',
-    onAction: () => void window.cloudnote?.reveal(res.path!),
+    onAction: () => void desktop?.reveal(res.path!),
   })
 }
 

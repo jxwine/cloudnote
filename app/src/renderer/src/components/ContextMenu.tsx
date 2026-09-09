@@ -5,6 +5,8 @@ export interface MenuAction {
   icon?: React.ReactNode
   shortcut?: string
   danger?: boolean
+  /** 灰掉且点不动。用在「不能停用自己」这种当前上下文下不成立的动作上 */
+  disabled?: boolean
   onSelect: () => void
 }
 
@@ -64,6 +66,7 @@ export function ContextMenu({ x, y, actions, anchor, onClose }: Props) {
             key={action.label}
             role="menuitem"
             className={'menu-item' + (action.danger ? ' is-danger' : '')}
+            disabled={action.disabled}
             // 不让按钮抢走焦点，否则编辑器里的选区会丢，格式命令就作用不到选中的文字上
             onMouseDown={(e) => e.preventDefault()}
             onClick={() => {

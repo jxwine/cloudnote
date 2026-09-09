@@ -41,6 +41,9 @@ export function saveDataUrl(userId, dataUrl) {
 
 const MIME = Object.fromEntries(Object.entries(TYPES).map(([mime, ext]) => [ext, mime]))
 
+/** 图片根目录。后台统计占用、删账号时清目录都要用到 */
+export const uploadsRoot = () => ROOT
+
 /** 读取已上传的图片；路径段做过白名单校验，杜绝跨目录读取 */
 export function readUpload(userId, name) {
   if (!/^[0-9a-z]+$/i.test(userId) || !/^[0-9a-f]{32}\.[a-z]+$/i.test(name)) return null

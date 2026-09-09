@@ -42,3 +42,35 @@ export function peerCount(userId, selfClientId) {
   for (const m of room) if (m.clientId !== selfClientId) n++
   return n
 }
+
+/** 某账号当前在线的连接数（后台用，不排除任何人） */
+export function onlineCount(userId) {
+  return rooms.get(userId)?.size ?? 0
+}
+
+/** 全站在线连接数和有连接的账号数 */
+export function onlineStats() {
+  let sockets = 0
+  for (const room of rooms.values()) sockets += room.size
+  return { accounts: rooms.size, sockets }
+}
+
+/**
+ * 把某账号的所有连接踢下线。
+ * 停用或删除账号时调用——否则已经建立的 WebSocket 不走鉴权钩子，会一直连着收推送。
+ */
+export function kick(userId, reason = 'account disabled') {
+  const room = rooms.get(userId)
+  if (!room) return 0
+  let n = 0
+  for (const m of [...room]) {
+    try {
+      m.socket.close(4003, reason)
+      n++
+    } catch {
+      /* 已经断了 */
+    }
+  }
+  rooms.delete(userId)
+  return n
+}

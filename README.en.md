@@ -26,6 +26,8 @@ No native modules, no external database, no third-party service.
   full-text search, `Ctrl+P` quick jump
 - **Safety nets**: soft-delete trash, automatic version snapshots with restore, Markdown export
 - **Lives in the tray**: closing the window only hides it; the app keeps running and keeps syncing
+- **Self-updating**: the client finds new versions on its own, downloads in-app, verifies the sha256, launches the installer
+- **Web admin**: manage accounts and publish client builds; the web app also offers the installer for download
 - **Web version**: same frontend code, usable straight from a browser, live-synced with the desktop app
 
 ## Tech stack
@@ -53,7 +55,7 @@ Run pieces separately:
 ```bash
 npm run server        # sync service only
 npm run app           # desktop client only
-npm test              # server end-to-end tests (51 of them)
+npm test              # server end-to-end tests (71 of them)
 npm run dist          # build the Windows installer into app/release
 ```
 
@@ -246,6 +248,48 @@ The interface follows the system theme and can also be switched manually from th
 
 ![Dark theme](screenshot-dark.png)
 
+## Client updates
+
+The server keeps a list of published builds. The client checks silently 8 seconds after start
+and every 6 hours after that; "检查更新" (Check for updates) in the account menu triggers it manually.
+
+When a newer version exists, a dialog shows the release notes **exactly as you typed them**
+in the admin panel. "立即更新" downloads in-app with a progress bar, verifies the sha256, and only
+then launches the installer and quits (NSIS needs the running app gone to overwrite it).
+A checksum mismatch deletes the file and asks you to retry — an unverified exe is never handed
+to the user to double-click.
+
+`electron-updater` is deliberately not used: it wants `latest.yml` and blockmaps laid out its way
+on the server, and an unsigned app has to disable signature verification on top of that. Not worth
+another dependency here. The cost is no delta downloads and no silent install.
+
+The web version has none of this; instead the login page and the account menu offer
+"下载 Windows 客户端" (Download the Windows client).
+
+## Admin panel
+
+**Web only** — it is an operations tool, a browser is the right place for it, and it does not need
+to take up a slot in the desktop client's menu.
+
+Admins are listed in `CLOUDNOTE_ADMINS` in `server/.env` (comma-separated emails). Sign in with a
+normal note account; if the address is on the list, "后台管理" (Admin) appears in the account menu.
+
+Deliberately not a role column in the database: permissions cannot be changed by accident through
+the UI, and if you lock yourself out, one SSH edit and a restart brings it back. The cost is that
+adding or removing an admin requires a restart.
+
+| Page | What it does |
+|---|---|
+| Users | Email, display name, signup time, last active, note count, connected devices; disable/enable, reset password, delete account |
+| Client builds | Upload an installer (with progress), write release notes, publish/unpublish, delete |
+
+Guard rails: an admin cannot disable or delete their own account; deleting an account requires
+typing the target email, which the server checks again; disabling immediately drops that account's
+WebSocket connections and invalidates already-issued tokens on the next request.
+
+Deleting an account is a **hard delete** — notes, folders, revisions and uploaded images all go,
+without passing through the trash, with no way back.
+
 ## Window and tray
 
 The close button in the title bar **does not quit the app** — it hides the window to the system
@@ -314,6 +358,8 @@ You can also put the configuration in `server/.env` (see `server/.env.example`);
 | `CLOUDNOTE_UPLOADS` | Image directory | `server/data/uploads` |
 | `CLOUDNOTE_AUTH_LIMIT_ID` | Allowed login failures per account per 5 minutes | `5` |
 | `CLOUDNOTE_AUTH_LIMIT_IP` | Allowed login failures per IP per 5 minutes | `30` |
+| `CLOUDNOTE_ADMINS` | Admin emails, comma-separated. Empty means nobody can reach the admin panel | empty |
+| `CLOUDNOTE_RELEASES` | Where client installers are stored | `server/data/releases` |
 
 Login rate limiting counts **failures** only and resets on success, so ordinary users never hit it.
 It works on two axes: per account, which stops credential stuffing against one address, and per IP,
@@ -341,7 +387,7 @@ cd app && VITE_CLOUDNOTE_SERVER=https://note.example.com npm run dist
 Issues and pull requests are welcome. Before submitting a change, please run:
 
 ```bash
-npm test          # server end-to-end, 51 tests
+npm test          # server end-to-end, 71 tests (admin ones need CLOUDNOTE_ADMINS=admin@test.local)
 cd app && npx tsc --noEmit -p tsconfig.json && npm run lint
 ```
 

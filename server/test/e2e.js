@@ -217,6 +217,124 @@ ok((await api('POST', '/api/auth/login', { body: { email, password: 'pass1234' }
 ok((await api('POST', '/api/auth/login', { body: { email, password: 'newpass123' } })).status === 200, '新密码可登录')
 ok((await api('GET', '/api/me', { token })).status === 200, '改密码后原有 token 仍然有效')
 
+/* ---------- 15. 后台管理与客户端发布 ---------- */
+/*
+ * 管理员是环境变量决定的，测试脚本改不了服务端的 .env。
+ * 所以先注册 ADMIN_EMAIL（默认 admin@test.local），拿 /api/me 看它到底算不算管理员：
+ * 不算就整段跳过并给出明确提示，而不是报一堆看不懂的 403。
+ */
+const ADMIN_EMAIL = process.env.ADMIN_EMAIL || 'admin@test.local'
+let adminToken = null
+{
+  const reg = await api('POST', '/api/auth/register', {
+    body: { email: ADMIN_EMAIL, password: 'pass1234', displayName: '管理员' },
+  })
+  adminToken =
+    reg.status === 200
+      ? reg.data.token
+      : (await api('POST', '/api/auth/login', { body: { email: ADMIN_EMAIL, password: 'pass1234' } }))
+          .data?.token
+}
+const adminMe = adminToken ? (await api('GET', '/api/me', { token: adminToken })).data : null
+
+if (!adminMe?.user?.isAdmin) {
+  console.log(
+    `
+  [33m⚠ 跳过后台管理与发布相关的测试[0m
+` +
+      `    需要服务端启动时带上 CLOUDNOTE_ADMINS=${ADMIN_EMAIL}
+`
+  )
+} else {
+  ok(true, `管理员账号就位（${ADMIN_EMAIL}）`)
+  ok((await api('GET', '/api/admin/stats', { token })).status === 403, '普通用户访问后台接口被拒')
+  ok((await api('GET', '/api/admin/stats')).status === 401, '未登录访问后台接口被拒')
+
+  const stats = await api('GET', '/api/admin/stats', { token: adminToken })
+  ok(stats.status === 200 && typeof stats.data.users === 'number', '统计接口返回计数')
+
+  const victimEmail = `v${Date.now()}@test.local`
+  const victim = (await api('POST', '/api/auth/register', {
+    body: { email: victimEmail, password: 'pass1234' },
+  })).data
+
+  const found = await api('GET', `/api/admin/users?q=${encodeURIComponent(victimEmail)}`, { token: adminToken })
+  ok(found.data.users?.length === 1, '按邮箱能搜到这个账号')
+
+  ok(
+    (await api('PATCH', `/api/admin/users/${adminMe.user.id}`, { token: adminToken, body: { disabled: true } }))
+      .status === 400,
+    '管理员不能停用自己'
+  )
+
+  await api('PATCH', `/api/admin/users/${victim.user.id}`, { token: adminToken, body: { disabled: true } })
+  ok((await api('GET', '/api/me', { token: victim.token })).status === 401, '停用后原 token 立即失效')
+  ok(
+    (await api('POST', '/api/auth/login', { body: { email: victimEmail, password: 'pass1234' } })).status === 403,
+    '停用后无法登录'
+  )
+  await api('PATCH', `/api/admin/users/${victim.user.id}`, { token: adminToken, body: { disabled: false } })
+  ok((await api('GET', '/api/me', { token: victim.token })).status === 200, '启用后恢复')
+
+  await api('PATCH', `/api/admin/users/${victim.user.id}`, { token: adminToken, body: { password: 'reset12345' } })
+  ok(
+    (await api('POST', '/api/auth/login', { body: { email: victimEmail, password: 'reset12345' } })).status === 200,
+    '管理员重置密码后新密码可登录'
+  )
+
+  ok(
+    (await api('DELETE', `/api/admin/users/${victim.user.id}`, {
+      token: adminToken, body: { confirmEmail: 'nope@test.local' },
+    })).status === 400,
+    '确认邮箱不匹配时拒绝删除'
+  )
+  ok(
+    (await api('DELETE', `/api/admin/users/${victim.user.id}`, {
+      token: adminToken, body: { confirmEmail: victimEmail },
+    })).status === 200,
+    '确认邮箱匹配后删除成功'
+  )
+  ok(
+    (await api('POST', '/api/auth/login', { body: { email: victimEmail, password: 'reset12345' } })).status === 401,
+    '账号删除后无法登录'
+  )
+
+  /* 发布包：造几 KB 假内容，验证 sha256 全链路 */
+  const { createHash, randomBytes } = await import('node:crypto')
+  const blob = randomBytes(64 * 1024)
+  const localSha = createHash('sha256').update(blob).digest('hex')
+  const version = `9.9.${Date.now() % 1000}`
+
+  const up = await fetch(`${BASE}/api/admin/releases`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/octet-stream',
+      authorization: 'Bearer ' + adminToken,
+      'x-version': version,
+      'x-filename': encodeURIComponent('云笔记 Setup.exe'),
+      'x-notes': encodeURIComponent('测试用的假包'),
+    },
+    body: blob,
+  })
+  const rel = await up.json()
+  ok(up.status === 200 && rel.sha256 === localSha, '上传后服务端算出的 sha256 与本地一致')
+  ok(rel.filename === '云笔记 Setup.exe', '中文文件名原样保留')
+
+  const latest = await api('GET', '/api/update/latest')
+  ok(latest.data.version === version, 'latest 返回刚发布的版本')
+
+  const dl = await fetch(BASE + latest.data.url)
+  const buf = Buffer.from(await dl.arrayBuffer())
+  ok(createHash('sha256').update(buf).digest('hex') === localSha, '下载回来的内容校验通过')
+
+  await api('PATCH', `/api/admin/releases/${rel.id}`, { token: adminToken, body: { published: false } })
+  // 库里可能还有别的已发布版本，所以只断言「不再是这一条」，而不是「空」
+  ok((await api('GET', '/api/update/latest')).data.version !== version, '下架后 latest 不再是它')
+  ok((await fetch(BASE + latest.data.url)).status === 404, '下架后下载链接 404')
+
+  ok((await api('DELETE', `/api/admin/releases/${rel.id}`, { token: adminToken })).status === 200, '删除版本')
+}
+
 dev1.ws.close(); dev2.ws.close()
 console.log('─'.repeat(46))
 console.log(`  通过 ${pass}  失败 ${fail}\n`)

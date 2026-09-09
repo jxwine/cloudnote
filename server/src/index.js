@@ -31,6 +31,16 @@ app.addContentTypeParser('application/json', { parseAs: 'string' }, (req, body, 
   }
 })
 
+/**
+ * 安装包上传走裸二进制流。
+ *
+ * 不引 @fastify/multipart：这个项目一贯少一个依赖就少一件部署时要装的东西，
+ * 而且 multipart 为了拿边界要先缓冲，81MB 的包没必要过那一道。
+ * 这里把 payload 原样交给路由，由 releases.js 边收边写盘边算 sha256。
+ * 元信息（文件名、版本号）走请求头。
+ */
+app.addContentTypeParser('application/octet-stream', (req, payload, done) => done(null, payload))
+
 // 必须早于路由注册：晚了子作用域就用不上，业务错误文案会被 Fastify 的默认消息顶掉
 app.setErrorHandler((err, req, reply) => {
   const status = err.statusCode || 500
@@ -52,8 +62,8 @@ app.get('/ws', { websocket: true }, (socket, req) => {
   const payload = token ? verify(token) : null
   const user = payload && getUser(payload.uid)
 
-  if (!user) {
-    socket.send(JSON.stringify({ type: 'error', message: '未授权' }))
+  if (!user || user.disabled) {
+    socket.send(JSON.stringify({ type: 'error', message: user ? '账号已被停用' : '未授权' }))
     socket.close(4001, 'unauthorized')
     return
   }

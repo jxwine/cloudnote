@@ -1429,9 +1429,16 @@ body.is-reflowing .bubble-bar {
 
 /* ============================ 输入对话框 ============================ */
 
+/*
+ * 遮罩从标题栏下方开始，不盖住标题栏。
+ *
+ * 右上角那条系统窗口按钮是 Windows 自己绘制的（titleBarOverlay），CSS 压不暗它。
+ * 遮罩要是 inset:0 盖满，页面标题栏会被压成 #B3B5B4 而系统那条还是 #F1F2F0，
+ * 右上角就割出一块明显更亮的方块。让它从 --titlebar-h 往下开始，两边颜色就一致了。
+ */
 .overlay {
   position: fixed;
-  inset: 0;
+  inset: var(--titlebar-h) 0 0 0;
   z-index: 300;
   display: flex;
   align-items: center;
@@ -2300,4 +2307,426 @@ body.is-reflowing .bubble-bar {
 .note-title::placeholder {
   color: var(--text-3);
   font-weight: 600;
+}
+
+/* ====== 更新提示 ====== */
+
+.update-dialog {
+  max-width: 460px;
+}
+.update-notes {
+  margin: 0 0 12px;
+  padding: 12px 14px;
+  max-height: 240px;
+  overflow: auto;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text);
+  font: 13px/1.7 var(--font-ui);
+  /* 更新说明是纯文本，保留换行但别横向溢出 */
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.update-notes.is-empty {
+  color: var(--text-2);
+  font-style: italic;
+}
+.update-meta {
+  margin: 0 0 12px;
+  color: var(--text-2);
+  font-size: 12px;
+}
+.update-progress {
+  position: relative;
+  height: 26px;
+  margin-bottom: 12px;
+  border-radius: 6px;
+  background: var(--hover);
+  overflow: hidden;
+}
+.update-bar {
+  height: 100%;
+  background: var(--accent-soft);
+  border-right: 2px solid var(--accent);
+  transition: width 0.2s var(--ease);
+}
+.update-pct {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font-size: 12px;
+  color: var(--text);
+}
+.update-hint {
+  margin: 10px 0 0;
+  color: var(--text-2);
+  font-size: 12px;
+}
+
+/* 登录页的「下载客户端」——只有网页版会渲染 */
+.auth-download {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 14px;
+  padding: 9px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 13px;
+  text-decoration: none;
+  transition: border-color 0.15s var(--ease), background 0.15s var(--ease);
+}
+.auth-download:hover {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+}
+.auth-download .dim {
+  margin-left: auto;
+  color: var(--text-2);
+  font-size: 12px;
+}
+
+.menu-item[disabled] {
+  opacity: 0.4;
+  cursor: default;
+}
+.menu-item[disabled]:hover {
+  background: none;
+}
+
+/* ====== 后台管理 ====== */
+
+.admin {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background: var(--bg);
+  color: var(--text);
+}
+.admin-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: var(--titlebar-h);
+  padding: 0 10px 0 14px;
+  border-bottom: 1px solid var(--line-soft);
+  -webkit-app-region: drag;
+}
+.admin-head .icon-btn,
+.admin-head .brand {
+  -webkit-app-region: no-drag;
+}
+.admin-who {
+  color: var(--text-2);
+  font-size: 12px;
+}
+
+.admin-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 16px 24px 0;
+}
+.admin-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 116px;
+  padding: 12px 16px;
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+  background: var(--surface);
+}
+.admin-stat-value {
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 1.2;
+  font-variant-numeric: tabular-nums;
+}
+.admin-stat-label {
+  color: var(--text-2);
+  font-size: 12px;
+}
+.admin-stat-hint {
+  color: var(--text-2);
+  font-size: 11px;
+  opacity: 0.75;
+}
+
+.admin-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 18px 24px 0;
+  border-bottom: 1px solid var(--line-soft);
+}
+.admin-tab {
+  padding: 8px 14px 10px;
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: none;
+  color: var(--text-2);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  transition: color 0.15s var(--ease);
+}
+.admin-tab:hover {
+  color: var(--text);
+}
+.admin-tab.is-active {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+  font-weight: 600;
+}
+
+.admin-body {
+  flex: 1;
+  overflow: auto;
+  padding: 20px 24px 40px;
+}
+.admin-section {
+  max-width: 1080px;
+}
+
+.admin-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+.admin-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 1 320px;
+  padding: 0 10px;
+  height: 34px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text-2);
+}
+.admin-search:focus-within {
+  border-color: var(--accent);
+}
+.admin-search input {
+  flex: 1;
+  border: none;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  outline: none;
+}
+.admin-count {
+  color: var(--text-2);
+  font-size: 12px;
+}
+
+/* 表格自己滚，别让整页横向滚——这是全项目唯一需要考虑窄屏的地方 */
+.admin-table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+  background: var(--surface);
+}
+.admin-table {
+  width: 100%;
+  min-width: 720px;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.admin-table th {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line-soft);
+  color: var(--text-2);
+  font-weight: 500;
+  font-size: 12px;
+  text-align: left;
+  white-space: nowrap;
+}
+.admin-table td {
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--line-soft);
+  vertical-align: middle;
+}
+.admin-table tbody tr:last-child td {
+  border-bottom: none;
+}
+.admin-table tbody tr:hover {
+  background: var(--hover);
+}
+.admin-table tr.is-disabled td {
+  opacity: 0.55;
+}
+.admin-table .num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.admin-table .dim {
+  color: var(--text-2);
+  white-space: nowrap;
+}
+.admin-table .tree-empty {
+  text-align: center;
+}
+
+.admin-user {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.admin-user-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 500;
+}
+.admin-user-mail {
+  color: var(--text-2);
+  font-size: 12px;
+}
+.admin-self {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 11px;
+  font-style: normal;
+}
+
+.admin-file {
+  max-width: 280px;
+}
+.admin-file span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.admin-file code {
+  color: var(--text-2);
+  font: 11px var(--font-mono);
+}
+
+.admin-tag {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--hover);
+  color: var(--text-2);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.admin-tag.is-live {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.admin-tag.is-off {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+/* 操作列。不能用 display:flex——那会把 <td> 从表格单元格变成 flex 容器，
+   行分隔线会跟着断开、垂直对齐也乱。用文本对齐加间距就够了。 */
+.admin-row-actions {
+  text-align: right;
+  white-space: nowrap;
+}
+.admin-row-actions > * + * {
+  margin-left: 6px;
+}
+.admin-row-actions .icon-btn,
+.admin-row-actions .btn-ghost {
+  vertical-align: middle;
+}
+
+.admin-pager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  margin-top: 14px;
+  font-size: 12px;
+}
+.admin-pager .dim {
+  color: var(--text-2);
+}
+
+.admin-warn {
+  margin: 0 0 14px;
+  padding: 10px 12px;
+  border: 1px solid var(--danger-soft);
+  border-radius: 8px;
+  background: var(--danger-soft);
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.65;
+}
+
+.admin-hint {
+  margin: 12px 2px 0;
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.admin-upload {
+  margin-bottom: 22px;
+  padding: 16px 18px;
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+  background: var(--surface);
+}
+.admin-upload-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 14px;
+  color: var(--text);
+  font-size: 14px;
+}
+.admin-upload-grid {
+  display: grid;
+  grid-template-columns: 2fr 1fr;
+  gap: 14px;
+}
+.admin-upload .field input[type='file'] {
+  padding: 6px 8px;
+  font-size: 12px;
+}
+.admin-upload textarea {
+  width: 100%;
+  padding: 9px 11px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text);
+  font: 13px/1.7 var(--font-ui);
+  resize: vertical;
+  outline: none;
+}
+.admin-upload textarea:focus {
+  border-color: var(--accent);
+}
+.admin-file-meta {
+  margin-top: 4px;
+  color: var(--text-2);
+  font-size: 12px;
+}
+
+@media (max-width: 720px) {
+  .admin-body,
+  .admin-stats,
+  .admin-tabs {
+    padding-left: 14px;
+    padding-right: 14px;
+  }
+  .admin-upload-grid {
+    grid-template-columns: 1fr;
+  }
 }

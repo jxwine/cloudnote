@@ -1,7 +1,9 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { api, session, DEFAULT_SERVER } from '@/lib/api'
 import { useStore } from '@/lib/store'
-import { IconCloud, IconServer } from './Icons'
+import { isDesktop } from '@/lib/platform'
+import { fetchLatestRelease, formatBytes, type UpdateInfo } from '@/lib/update'
+import { IconCloud, IconDownload, IconServer } from './Icons'
 
 export function LoginView() {
   const setUser = useStore((s) => s.setUser)
@@ -13,6 +15,17 @@ export function LoginView() {
   const [showServer, setShowServer] = useState(session.server !== DEFAULT_SERVER)
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+  /** 网页版才查：桌面端用户手里已经有客户端了，没必要再给一个下载链接 */
+  const [client, setClient] = useState<UpdateInfo | null>(null)
+
+  useEffect(() => {
+    if (isDesktop) return
+    let alive = true
+    void fetchLatestRelease().then((r) => alive && setClient(r))
+    return () => {
+      alive = false
+    }
+  }, [])
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -103,6 +116,16 @@ export function LoginView() {
               {busy ? '连接中…' : mode === 'login' ? '登录' : '创建账号'}
             </button>
           </div>
+
+          {client && (
+            <a className="auth-download" href={client.downloadUrl} download={client.filename}>
+              <IconDownload size={15} />
+              下载 Windows 客户端
+              <span className="dim">
+                v{client.version} · {formatBytes(client.size)}
+              </span>
+            </a>
+          )}
 
           <p className="auth-switch">
             {mode === 'login' ? '还没有账号？' : '已经有账号了？'}

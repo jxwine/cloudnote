@@ -1,7 +1,10 @@
 import { app, shell, BrowserWindow, ipcMain, nativeTheme, dialog, Tray, Menu } from 'electron'
-import { join, dirname } from 'node:path'
+import { join, dirname, basename } from 'node:path'
 import { fork, type ChildProcess } from 'node:child_process'
-import { existsSync, writeFileSync, mkdirSync } from 'node:fs'
+import { existsSync, writeFileSync, mkdirSync, createWriteStream, rmSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { Readable } from 'node:stream'
+import { pipeline } from 'node:stream/promises'
 
 /** 由构建注入：打包时没指定远程服务器才需要自带一份后端 */
 declare const __USE_BUNDLED_SERVER__: boolean
@@ -221,6 +224,65 @@ app.whenReady().then(() => {
   /** 导出完在文件管理器里定位到它 */
   ipcMain.handle('shell:reveal', (_e, path: string) => {
     shell.showItemInFolder(path)
+  })
+
+  /**
+   * 下载安装包。
+   *
+   * 放在主进程而不是渲染进程：渲染进程拿不到文件系统，下完也没法交给系统去执行。
+   * 边下边算 sha256，对不上就把文件删掉再报错——宁可让用户重来一次，
+   * 也不能把一个来路不明的 exe 递给他去双击。
+   */
+  ipcMain.handle('update:download', async (_e, url: string, sha256: string) => {
+    const res = await fetch(url)
+    if (!res.ok || !res.body) throw new Error(`下载失败（${res.status}）`)
+
+    const total = Number(res.headers.get('content-length') || 0)
+    // URL 里的中文是百分号编码的，不解码的话临时文件名会是一串 %E4%BA%91，
+    // 用户在 UAC 提示里看到的就是那串乱码。顺手去掉路径分隔符，防止拼出目录。
+    const raw = decodeURIComponent(basename(new URL(url).pathname))
+    const name = raw.replace(/[\/:*?"<>|]/g, '_') || 'cloudnote-setup.exe'
+    const file = join(app.getPath('temp'), name)
+    const hash = createHash('sha256')
+    let received = 0
+
+    try {
+      await pipeline(
+        Readable.fromWeb(res.body as Parameters<typeof Readable.fromWeb>[0]),
+        async function* (source) {
+          for await (const chunk of source) {
+            received += (chunk as Buffer).length
+            hash.update(chunk as Buffer)
+            mainWindow?.webContents.send('update:progress', { received, total })
+            yield chunk
+          }
+        },
+        createWriteStream(file)
+      )
+    } catch (err) {
+      rmSync(file, { force: true })
+      throw err
+    }
+
+    if (hash.digest('hex') !== sha256) {
+      rmSync(file, { force: true })
+      throw new Error('安装包校验失败，可能在传输中损坏了，请重试')
+    }
+    return file
+  })
+
+  /**
+   * 拉起安装程序然后退出自己。
+   *
+   * NSIS 装的时候会要求覆盖正在运行的程序，所以必须先退。quitting 置真是为了
+   * 绕过托盘那条「点关闭只隐藏」的拦截，否则这里 quit 不掉。
+   */
+  ipcMain.handle('update:install', async (_e, path: string) => {
+    if (!existsSync(path)) throw new Error('安装包不见了，请重新下载')
+    await shell.openPath(path)
+    quitting = true
+    // 给系统一点时间把安装程序拉起来，立刻退出的话有概率还没启动就没了父进程
+    setTimeout(() => app.quit(), 800)
   })
 
   ipcMain.handle('theme:set', (_e, mode: 'light' | 'dark' | 'system') => {

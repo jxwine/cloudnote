@@ -32,7 +32,11 @@ CREATE TABLE IF NOT EXISTS users (
   password_hash TEXT NOT NULL,
   display_name  TEXT NOT NULL,
   seq           INTEGER NOT NULL DEFAULT 0,
-  created_at    INTEGER NOT NULL
+  created_at    INTEGER NOT NULL,
+  -- 停用后无法登录，已登录的设备下一次请求就被挡回去。数据保留，随时可恢复。
+  disabled      INTEGER NOT NULL DEFAULT 0,
+  -- 后台的「最后活跃」。鉴权钩子里节流写，不是每个请求都更新。
+  last_active_at INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS folders (
@@ -79,6 +83,21 @@ CREATE TABLE IF NOT EXISTS note_revisions (
   created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_rev_note ON note_revisions(note_id, created_at DESC);
+
+-- 客户端安装包。文件本身落在 CLOUDNOTE_RELEASES 目录，这里只存元信息。
+-- sha256 是上传时边写盘边算的，客户端下载完会自己校验一遍。
+CREATE TABLE IF NOT EXISTS releases (
+  id         TEXT PRIMARY KEY,
+  version    TEXT NOT NULL,
+  platform   TEXT NOT NULL DEFAULT 'win32',
+  filename   TEXT NOT NULL,
+  size       INTEGER NOT NULL,
+  sha256     TEXT NOT NULL,
+  notes      TEXT NOT NULL DEFAULT '',
+  published  INTEGER NOT NULL DEFAULT 1,
+  created_at INTEGER NOT NULL,
+  UNIQUE(version, platform)
+);
 `)
 
 /* ---------- 迁移：给老库补上后加的列 ---------- */
@@ -91,6 +110,8 @@ function addColumn(table, column, definition) {
 // 标签存成 JSON 数组字符串。笔记的标签通常只有几个，
 // 单独开表要多一次 join，收益抵不上复杂度。
 addColumn('notes', 'tags', "TEXT NOT NULL DEFAULT '[]'")
+addColumn('users', 'disabled', 'INTEGER NOT NULL DEFAULT 0')
+addColumn('users', 'last_active_at', 'INTEGER')
 
 /** 为某用户取下一个单调递增的变更序号（增量同步游标） */
 const bumpSeq = db.prepare('UPDATE users SET seq = seq + 1 WHERE id = ?')

@@ -196,3 +196,18 @@ export const IconJump = svg(
     <path d="M8 10.5l2.5 2.5L8 15.5M13 15.5h3.5" />
   </>
 )
+
+export const IconDownload = svg(
+  <>
+    <path d="M12 4v10.5" />
+    <path d="M7.8 10.6l4.2 4.2 4.2-4.2" />
+    <path d="M4.5 19h15" />
+  </>
+)
+
+export const IconRefresh = svg(
+  <>
+    <path d="M20 12a8 8 0 1 1-2.4-5.7" />
+    <path d="M20.2 4.4v4.2h-4.2" />
+  </>
+)

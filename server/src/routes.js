@@ -1,8 +1,14 @@
 import { db, tx, nextSeq, newId } from './db.js'
-import { register, login, sign, authGuard, httpError, changePassword } from './auth.js'
-import { broadcast, peerCount } from './hub.js'
-import { saveDataUrl, readUpload } from './uploads.js'
+import {
+  register, login, sign, authGuard, adminGuard, httpError,
+  changePassword, resetPassword, toUser,
+} from './auth.js'
+import { broadcast, peerCount, kick, onlineCount, onlineStats } from './hub.js'
+import { saveDataUrl, readUpload, uploadsRoot } from './uploads.js'
+import { saveStream, readRelease, removeRelease } from './releases.js'
 import { allowAuth, bumpAuth, resetAuth, uploadLimiter } from './guard.js'
+import { rmSync } from 'node:fs'
+import { join } from 'node:path'
 
 /* ---------- 行 → 客户端对象 ---------- */
 const toFolder = (r) =>
@@ -87,7 +93,59 @@ const Q = {
     'DELETE FROM note_revisions WHERE note_id = ? AND id NOT IN' +
     ' (SELECT id FROM note_revisions WHERE note_id = ? ORDER BY created_at DESC LIMIT ?)'
   ),
+
+  /* ----- 后台管理 ----- */
+  countUsers: db.prepare('SELECT COUNT(*) AS n FROM users'),
+  // 一次查完用户和它的笔记数，避免每行再来一次查询
+  // 搜索词为空时调用方传 '%'，让 LIKE 匹配所有行——省掉一条分支 SQL
+  listUsers: db.prepare(
+    'SELECT u.id, u.email, u.display_name, u.created_at, u.disabled, u.last_active_at,' +
+    ' (SELECT COUNT(*) FROM notes n WHERE n.user_id = u.id AND n.deleted = 0) AS notes,' +
+    ' (SELECT COUNT(*) FROM folders f WHERE f.user_id = u.id AND f.deleted = 0) AS folders' +
+    ' FROM users u WHERE u.email LIKE ? OR u.display_name LIKE ?' +
+    ' ORDER BY u.created_at DESC LIMIT ? OFFSET ?'
+  ),
+  countUsersLike: db.prepare(
+    'SELECT COUNT(*) AS n FROM users WHERE email LIKE ? OR display_name LIKE ?'
+  ),
+  getUserRow: db.prepare('SELECT id, email, display_name, disabled FROM users WHERE id = ?'),
+  setDisabled: db.prepare('UPDATE users SET disabled = ? WHERE id = ?'),
+  dropUser: db.prepare('DELETE FROM users WHERE id = ?'),
+  dropUserNotes: db.prepare('DELETE FROM notes WHERE user_id = ?'),
+  dropUserFolders: db.prepare('DELETE FROM folders WHERE user_id = ?'),
+  dropUserRevs: db.prepare('DELETE FROM note_revisions WHERE user_id = ?'),
+  totalNotes: db.prepare('SELECT COUNT(*) AS n FROM notes WHERE deleted = 0'),
+  totalFolders: db.prepare('SELECT COUNT(*) AS n FROM folders WHERE deleted = 0'),
+
+  /* ----- 客户端发布包 ----- */
+  listReleases: db.prepare('SELECT * FROM releases ORDER BY created_at DESC'),
+  getRelease: db.prepare('SELECT * FROM releases WHERE id = ?'),
+  latestRelease: db.prepare(
+    'SELECT * FROM releases WHERE platform = ? AND published = 1 ORDER BY created_at DESC LIMIT 1'
+  ),
+  findVersion: db.prepare('SELECT id FROM releases WHERE version = ? AND platform = ?'),
+  insRelease: db.prepare(
+    'INSERT INTO releases (id,version,platform,filename,size,sha256,notes,published,created_at)' +
+    ' VALUES (?,?,?,?,?,?,?,1,?)'
+  ),
+  updRelease: db.prepare('UPDATE releases SET notes = ?, published = ? WHERE id = ?'),
+  dropRelease: db.prepare('DELETE FROM releases WHERE id = ?'),
 }
+
+/** releases 行 → 客户端对象 */
+const toRelease = (r) =>
+  r && {
+    id: r.id,
+    version: r.version,
+    platform: r.platform,
+    filename: r.filename,
+    size: r.size,
+    sha256: r.sha256,
+    notes: r.notes,
+    published: !!r.published,
+    createdAt: r.created_at,
+    url: `/downloads/${r.id}/${encodeURIComponent(r.filename)}`,
+  }
 
 /** 每篇最多留这么多条历史，且两条快照至少隔这么久——否则每敲几个字就存一版 */
 const REVISION_KEEP = 40
@@ -117,7 +175,7 @@ export default async function routes(app) {
       const { email, password, displayName } = req.body || {}
       const user = register(email, password, displayName)
       resetAuth(req.ip, email)
-      return { token: sign(user), user }
+      return { token: sign(user), user: toUser(user) }
     } catch (err) {
       bumpAuth(req.ip, req.body?.email)
       throw err
@@ -130,7 +188,7 @@ export default async function routes(app) {
       const { email, password } = req.body || {}
       const user = login(email, password)
       resetAuth(req.ip, email)
-      return { token: sign(user), user }
+      return { token: sign(user), user: toUser(user) }
     } catch (err) {
       bumpAuth(req.ip, req.body?.email)
       throw err
@@ -149,12 +207,37 @@ export default async function routes(app) {
       .send(file.stream)
   })
 
+  /* ================= 客户端发布包 ================= */
+  /**
+   * 这两个接口都不鉴权：新用户还没有账号就得先能下到客户端，
+   * 桌面端也要在登录之前就能检查更新。
+   */
+  app.get('/api/update/latest', async (req) => {
+    const platform = String(req.query?.platform || 'win32')
+    const row = Q.latestRelease.get(platform)
+    return row ? toRelease(row) : {}
+  })
+
+  app.get('/downloads/:id/:filename', async (req, reply) => {
+    const row = Q.getRelease.get(req.params.id)
+    if (!row || !row.published) return reply.code(404).send({ error: '安装包不存在' })
+    const file = readRelease(req.params.id, req.params.filename)
+    if (!file) return reply.code(404).send({ error: '安装包不存在' })
+    return reply
+      .type('application/octet-stream')
+      // 文件名带中文，用 RFC 5987 的写法，浏览器才不会存成乱码
+      .header('content-disposition',
+        `attachment; filename*=UTF-8''${encodeURIComponent(row.filename)}`)
+      .header('content-length', file.size)
+      .send(file.stream)
+  })
+
   /* 以下路由全部要求登录 */
   app.register(async (priv) => {
     priv.addHook('preHandler', authGuard)
 
     priv.get('/api/me', async (req) => ({
-      user: req.user,
+      user: toUser(req.user),
       peers: peerCount(req.user.id, req.clientId),
     }))
 
@@ -336,6 +419,133 @@ export default async function routes(app) {
       })
       broadcast(uid, { type: 'note:upsert', note }, req.clientId)
       return note
+    })
+  })
+
+  /* ================= 后台管理 ================= */
+  /**
+   * 管理员由 .env 的 CLOUDNOTE_ADMINS 决定，不是数据库里的角色。
+   * 单开一个作用域，先鉴权再判管理员，两个钩子按顺序跑。
+   */
+  app.register(async (admin) => {
+    admin.addHook('preHandler', authGuard)
+    admin.addHook('preHandler', adminGuard)
+
+    admin.get('/api/admin/stats', async () => {
+      const online = onlineStats()
+      return {
+        users: Q.countUsers.get().n,
+        notes: Q.totalNotes.get().n,
+        folders: Q.totalFolders.get().n,
+        onlineAccounts: online.accounts,
+        onlineSockets: online.sockets,
+        releases: Q.listReleases.all().length,
+      }
+    })
+
+    admin.get('/api/admin/users', async (req) => {
+      const q = String(req.query?.q || '').trim()
+      const like = q ? `%${q}%` : '%'
+      const limit = Math.min(Math.max(Number(req.query?.limit) || 30, 1), 100)
+      const offset = Math.max(Number(req.query?.offset) || 0, 0)
+      const rows = Q.listUsers.all(like, like, limit, offset)
+      return {
+        total: Q.countUsersLike.get(like, like).n,
+        limit,
+        offset,
+        users: rows.map((r) => ({
+          id: r.id,
+          email: r.email,
+          displayName: r.display_name,
+          createdAt: r.created_at,
+          lastActiveAt: r.last_active_at,
+          disabled: !!r.disabled,
+          notes: r.notes,
+          folders: r.folders,
+          online: onlineCount(r.id),
+        })),
+      }
+    })
+
+    admin.patch('/api/admin/users/:id', async (req) => {
+      const target = Q.getUserRow.get(req.params.id)
+      if (!target) throw httpError(404, '用户不存在')
+      const { disabled, password } = req.body || {}
+
+      if (disabled !== undefined) {
+        // 把自己停了就再也进不来了，直接挡住
+        if (target.id === req.user.id) throw httpError(400, '不能停用自己的账号')
+        Q.setDisabled.run(disabled ? 1 : 0, target.id)
+        if (disabled) kick(target.id, 'account disabled')
+      }
+      if (password !== undefined) resetPassword(target.id, password)
+
+      const row = Q.getUserRow.get(target.id)
+      return { id: row.id, email: row.email, disabled: !!row.disabled }
+    })
+
+    admin.delete('/api/admin/users/:id', async (req) => {
+      const target = Q.getUserRow.get(req.params.id)
+      if (!target) throw httpError(404, '用户不存在')
+      if (target.id === req.user.id) throw httpError(400, '不能删除自己的账号')
+      // 不可恢复的操作，要求手输邮箱对上才执行
+      if (String(req.body?.confirmEmail || '').trim().toLowerCase() !== target.email)
+        throw httpError(400, '确认邮箱不匹配，未执行删除')
+
+      kick(target.id, 'account removed')
+      tx(() => {
+        Q.dropUserRevs.run(target.id)
+        Q.dropUserNotes.run(target.id)
+        Q.dropUserFolders.run(target.id)
+        Q.dropUser.run(target.id)
+      })
+      // 图片目录在事务之外删：文件系统回滚不了，宁可留下孤儿文件也别丢数据库一致性
+      rmSync(join(uploadsRoot(), target.id), { recursive: true, force: true })
+      return { ok: true, email: target.email }
+    })
+
+    admin.get('/api/admin/releases', async () => ({
+      releases: Q.listReleases.all().map(toRelease),
+    }))
+
+    /**
+     * 上传安装包。body 是裸二进制（application/octet-stream），
+     * 版本号和文件名走请求头——multipart 为了找边界要先缓冲，81MB 没必要过那一道。
+     * 全局的 16MB bodyLimit 是给笔记正文定的，这里显式放到 500MB——和 releases.js
+     * 里的硬上限对齐。流式解析器其实不经过缓冲，这个值只是把意图写明白。
+     */
+    admin.post('/api/admin/releases', { bodyLimit: 500 * 1024 * 1024 }, async (req) => {
+      const version = String(req.headers['x-version'] || '').trim()
+      const platform = String(req.headers['x-platform'] || 'win32').trim()
+      const filename = decodeURIComponent(String(req.headers['x-filename'] || '').trim())
+      const notes = decodeURIComponent(String(req.headers['x-notes'] || ''))
+
+      if (!/^\d+\.\d+\.\d+/.test(version)) throw httpError(400, '版本号要形如 1.2.0')
+      if (!filename) throw httpError(400, '缺少文件名')
+      if (Q.findVersion.get(version, platform))
+        throw httpError(409, `版本 ${version} 已经存在，请先删除旧的那条`)
+
+      const id = newId()
+      const saved = await saveStream(id, filename, req.body)
+      Q.insRelease.run(id, version, platform, saved.filename, saved.size, saved.sha256, notes, Date.now())
+      return toRelease(Q.getRelease.get(id))
+    })
+
+    admin.patch('/api/admin/releases/:id', async (req) => {
+      const row = Q.getRelease.get(req.params.id)
+      if (!row) throw httpError(404, '版本不存在')
+      const notes = req.body?.notes === undefined ? row.notes : String(req.body.notes)
+      const published = req.body?.published === undefined ? row.published : (req.body.published ? 1 : 0)
+      Q.updRelease.run(notes, published, row.id)
+      return toRelease(Q.getRelease.get(row.id))
+    })
+
+    admin.delete('/api/admin/releases/:id', async (req) => {
+      const row = Q.getRelease.get(req.params.id)
+      if (!row) throw httpError(404, '版本不存在')
+      Q.dropRelease.run(row.id)
+      removeRelease(row.id)
+      return { ok: true, version: row.version }
     })
   })
 }

@@ -56,12 +56,20 @@ CLOUDNOTE_UPLOADS=$SERVER/data/uploads
 # 登录限流：只统计失败，成功一次清零
 CLOUDNOTE_AUTH_LIMIT_ID=5
 CLOUDNOTE_AUTH_LIMIT_IP=30
+
+# 后台管理员，逗号分隔的邮箱。留空就是没有人能进后台。
+# 用现有的笔记账号登录，命中名单即可在网页版看到「后台管理」入口。
+# 故意不放进数据库：权限不会被界面误改，丢了权限改这一行重启就回来了。改完要重启。
+CLOUDNOTE_ADMINS=
+
+# 客户端安装包存放目录。备份 data/ 时会一并带上。
+CLOUDNOTE_RELEASES=$SERVER/data/releases
 ENVEOF
   chmod 600 "$ENV_FILE"
   ok "已生成 .env 和随机密钥（权限 600）"
 fi
 
-mkdir -p "$SERVER/data/uploads"
+mkdir -p "$SERVER/data/uploads" "$SERVER/data/releases"
 ok "数据目录就绪：$SERVER/data"
 
 say "4/4 启动服务"
