@@ -389,6 +389,15 @@ To make an installed client point at your server by default, inject the address 
 cd app && VITE_CLOUDNOTE_SERVER=https://note.example.com npm run dist
 ```
 
+Always inject the address for clients you hand to other people. Without it the default is
+`http://localhost:4471` and a freshly installed client cannot connect — the packaged build is
+meant to fall back to a bundled backend, but that path is currently broken: Electron 33 ships
+Node 20.18.3 while the server needs `node:sqlite` (Node 24), so the forked server never starts.
+Injecting the address makes `__USE_BUNDLED_SERVER__` false, so nothing is forked.
+
+Users can still change it: the "换一个同步服务" (Use another sync service) button on the login
+page is always available.
+
 ## Contributing
 
 Issues and pull requests are welcome. Start with [CONTRIBUTING.en.md](CONTRIBUTING.en.md) for setup,

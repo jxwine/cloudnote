@@ -349,6 +349,13 @@ CLOUDNOTE_SECRET=换成随机密钥 PORT=4471 npm start
 cd app && VITE_CLOUDNOTE_SERVER=https://note.example.com npm run dist
 ```
 
+发布给别人用的客户端**务必**注入这个地址。不注入的话默认连 `http://localhost:4471`，
+装了包的人开机是连不上的——打包版本来会自带一份后端顶上，但那条路当前是断的：
+Electron 33 内置的 Node 是 20.18.3，而服务端要用 `node:sqlite`（需要 Node 24），
+fork 出来的服务起不来。注入地址后 `__USE_BUNDLED_SERVER__` 为假，不会再去 fork。
+
+注入之后用户仍然可以改：登录页的「换一个同步服务」按钮一直都在。
+
 ## 参与
 
 欢迎提 Issue 和 PR。动手前请看 [CONTRIBUTING.md](CONTRIBUTING.md)，那里有环境要求、
