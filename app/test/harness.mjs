@@ -19,6 +19,7 @@ const PORT_SERVER = 4472
 const PORT_WEB = 5273
 const PORT_A = 9701
 const PORT_B = 9702
+const PORT_C = 9703
 // 统一用 127.0.0.1：Windows 上 localhost 可能先解析到 ::1，探活和浏览器就对不上了
 const WEB_URL = `http://127.0.0.1:${PORT_WEB}/`
 
@@ -108,9 +109,12 @@ export async function bootEnv({ tmpDir }) {
   const chrome = findChrome()
   const headless = process.argv.includes('--headless')
   const devices = []
+  // 三台：两台够测大部分冲突，但「一台改、另外两台都开着」这种广播扇出
+  // 和多方冲突只有三台才看得出来
   for (const [port, label] of [
     [PORT_A, 'A'],
     [PORT_B, 'B'],
+    [PORT_C, 'C'],
   ]) {
     const profile = join(tmpDir, 'chrome-' + label)
     rmSync(profile, { recursive: true, force: true })
@@ -145,6 +149,13 @@ export async function bootEnv({ tmpDir }) {
   }
 }
 
+/**
+ * 只收拾**这套测试自己起的**进程。
+ *
+ * 按 pid 加 /T 连子进程一起收，绝不按进程名一刀切——
+ * `taskkill /IM chrome.exe /F` 会把用户自己开着的浏览器一并杀掉，
+ * 那是别人正在用的东西。
+ */
 export function shutdown() {
   for (const p of procs) {
     try {
@@ -157,4 +168,5 @@ export function shutdown() {
       /* 收尾失败不该盖掉真正的测试结果 */
     }
   }
+  procs.length = 0
 }

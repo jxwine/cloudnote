@@ -210,3 +210,107 @@ export const authDialogText = (dev) =>
     )
     return d ? d.textContent : ''
   })
+
+/**
+ * 改标题。直接操作编辑区顶上的标题框——它是受控组件，
+ * 得走原生 setter 再派发 input，不然 React 收不到。
+ */
+export const renameViaSidebar = (dev, title) =>
+  dev.evaluate((t) => {
+    const el = document.querySelector('.note-title')
+    if (!el) throw new Error('找不到标题输入框')
+    // 标题框是 textarea 不是 input，拿 HTMLInputElement 的 setter 去 call 会 Illegal invocation
+    const proto = el.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement : window.HTMLInputElement
+    Object.getOwnPropertyDescriptor(proto.prototype, 'value').set.call(el, t)
+    el.dispatchEvent(new Event('input', { bubbles: true }))
+    el.dispatchEvent(new Event('blur', { bubbles: true }))
+    return 'ok'
+  }, title)
+
+/** 右键当前笔记 → 删除。走真实的右键菜单，和用户操作同一条路 */
+export const deleteActiveNote = async (dev) => {
+  await dev.evaluate(() => {
+    const row = document.querySelector('.tree-row.is-active, [class*=row][class*=active]')
+    const target = row || document.querySelector('.tree-label')?.closest('[class*=row]')
+    if (!target) throw new Error('侧栏里找不到当前笔记')
+    target.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 40, clientY: 120 }))
+    return 'ok'
+  })
+  // 只等菜单渲染出来就够。等太久会跨过 700ms 的保存防抖，
+  // 「删除吞掉还没落库的内容」这个窗口就撞不上了
+  await sleep(150)
+  await dev.evaluate(() => {
+    const item = [...document.querySelectorAll('.menu .menu-item')].find((b) =>
+      b.textContent.includes('删除笔记')
+    )
+    if (!item) {
+      const seen = [...document.querySelectorAll('.menu .menu-item')].map((b) => b.textContent)
+      throw new Error('右键菜单里没有「删除笔记」，只有：' + JSON.stringify(seen))
+    }
+    item.click()
+    return 'ok'
+  })
+}
+
+/** 回收站 → 恢复第一条 */
+export const restoreFromTrash = async (dev) => {
+  await dev.evaluate(() => {
+    document.querySelector('[title^="回收站"]').click()
+    return 'ok'
+  })
+  await sleep(1200)
+  await dev.evaluate(() => {
+    const btn = [...document.querySelectorAll('.trash-actions button')].find((b) =>
+      b.textContent.includes('放回去')
+    )
+    if (!btn) throw new Error('回收站里没有可恢复的笔记')
+    btn.click()
+    return 'ok'
+  })
+  await sleep(1200)
+  // 切回笔记列表
+  await dev.evaluate(() => {
+    const tab = [...document.querySelectorAll('.panel-tab')].find((b) => b.textContent.includes('笔记'))
+    if (tab) tab.click()
+    return 'ok'
+  })
+}
+
+/**
+ * 在页面里直接让某类请求返回一个真实的错误响应。
+ *
+ * 比 CDP 的 Fetch.fulfillRequest 靠谱：那条路在这套环境里会退化成网络失败，
+ * 客户端当成离线（本来就会入队重试），根本走不到「服务端明确报错」那个分支。
+ * 直接换掉 window.fetch 返回一个 500 Response，语义就准确了。
+ */
+export const rejectInPage = (dev, { method, urlEndsWith, status = 500, times = 1 }) =>
+  dev.evaluate(
+    (m, u, st, n) => {
+      const orig = window.__origFetch || window.fetch
+      window.__origFetch = orig
+      let left = n
+      window.fetch = async (...a) => {
+        const url = String(a[0])
+        const meth = (a[1] && a[1].method) || 'GET'
+        if (left > 0 && meth === m && url.endsWith(u)) {
+          left--
+          return new Response('{"error":"server said no"}', {
+            status: st,
+            headers: { 'content-type': 'application/json' },
+          })
+        }
+        return orig(...a)
+      }
+      return 'ok'
+    },
+    method,
+    urlEndsWith,
+    status,
+    times
+  )
+
+export const restoreFetch = (dev) =>
+  dev.evaluate(() => {
+    if (window.__origFetch) window.fetch = window.__origFetch
+    return 'ok'
+  })

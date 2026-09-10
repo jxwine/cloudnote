@@ -322,9 +322,9 @@ function onRemoteNote(remote: Note) {
  * 「云端版本」副本和两条重复提示。串起来之后，后一次进来时前一次已经登记好了，
  * 会走下面那条复用分支去更新同一条副本。
  */
-function archiveRemote(remote: Note): Promise<boolean> {
+function archiveRemote(remote: Note, incoming?: string): Promise<boolean> {
   const prev = archiveChain.get(remote.id) ?? Promise.resolve()
-  const next = prev.catch(() => {}).then(() => doArchive(remote))
+  const next = prev.catch(() => {}).then(() => doArchive(remote, incoming))
   archiveChain.set(remote.id, next)
   void next.catch(() => {}).then(() => {
     if (archiveChain.get(remote.id) === next) archiveChain.delete(remote.id)
@@ -333,7 +333,7 @@ function archiveRemote(remote: Note): Promise<boolean> {
 }
 
 /** 返回是否真的归档成功了——调用方要靠它决定敢不敢收下远端的版本号 */
-async function doArchive(remote: Note): Promise<boolean> {
+async function doArchive(remote: Note, incoming?: string): Promise<boolean> {
   const s = store()
 
   /*
@@ -347,8 +347,19 @@ async function doArchive(remote: Note): Promise<boolean> {
   // 只比正文：副本存在的意义是留住不一样的那一版正文。标题在本地缓存里落盘有延迟
   // （persistCache 是防抖的），关窗那一下经常出现「正文一致、标题一个空一个有」，
   // 把标题算进来就会为此建一条毫无内容差异的副本
-  const mine = s.notes[remote.id]
-  if (mine && mine.content === remote.content) return true
+  // 已经被删掉的那一版不值得留副本——那等于把刚删掉的笔记原地复活一份，
+  // 而且副本还是「未删除」状态，用户会以为删除没生效
+  if (remote.deleted) return true
+
+  /*
+   * 比的是「本端马上要写上去的那份正文」，不是 store 里那份。
+   *
+   * store 的缓存是防抖落盘的，关窗重开这一下它往往还停在旧内容上，
+   * 拿它去比就会得出「不一样」，白建一条和主笔记最终内容完全相同的副本。
+   * 有 pending 就用 pending 里的，那才是本端的真实意图。
+   */
+  const mine = incoming ?? pendingSaves.get(remote.id)?.content ?? s.notes[remote.id]?.content
+  if (mine !== undefined && mine === remote.content) return true
   const existing = activeArchive.get(remote.id)
   const stamp = new Date().toLocaleString('zh-CN', { hour12: false, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
   const title = `${remote.title || '无标题'}（云端版本 ${stamp}）`
@@ -508,7 +519,7 @@ export async function flushNote(noteId: string) {
         // 云端有更新的版本：先把它归档，再用最新版本号把本地内容写上去。
         // 归档没成功就绝不能往下走——那一步会拿云端的版本号把云端内容盖掉，
         // 而这时它还没有任何备份，等于把别的设备刚写的东西直接删了
-        if (!(await archiveRemote(err.note))) {
+        if (!(await archiveRemote(err.note, patch.content))) {
           retainPending(noteId, patch, '云端有更新的版本，暂时没能备份下来')
           s.setStatus('error')
           return
@@ -584,6 +595,16 @@ function retainPending(noteId: string, patch: Patch, reason?: string) {
     return
   }
   saveFailures.set(noteId, times)
+  /*
+   * 主动排一次退避重试。
+   *
+   * 原来只把内容留在 pending 里就完了，指望「下次用户敲字」把它带出去——
+   * 那句「失败重试 3 次」其实从来没发生过：flushNote 的 finally 只在
+   * saveGen 变过（请求期间用户又敲了字）时才排下一次。用户打完字走开、
+   * 或者三台设备同时改撞了两次 409，内容就一直卡在本地，状态栏红着，
+   * 他也不知道该干什么才能让它重来。
+   */
+  scheduleFlush(noteId, SAVE_DEBOUNCE * 2 * times)
 }
 
 /**
@@ -628,6 +649,33 @@ export function forgetLocalData() {
 }
 
 /* ---------------- 结构性操作（乐观更新 + 离线入队） ---------------- */
+
+/**
+ * 移动、改名、改标签这类只动元信息的操作，落库之后**只收下它自己那几个字段**加版本号。
+ *
+ * 不能拿服务端返回的整条笔记去 applyNote：用户很可能正在打字，
+ * 服务端那份 content 是他敲这几个字之前的，整条盖下去等于把刚写的退回去——
+ * 切一下笔记（setContent 用 store 里的内容重置编辑器）就看得见字少了。
+ */
+function applyMeta(id: string, saved: Note, fields: Partial<Note>) {
+  const s = store()
+  const cur = s.notes[id]
+  if (!cur) return
+  s.applyNote({ ...cur, ...fields, version: saved.version, seq: saved.seq, updatedAt: saved.updatedAt })
+}
+
+/**
+ * 操作失败要退回去时，同样只退它自己改的字段。
+ *
+ * 原来是 applyNote(cur)，cur 是**操作开始那一刻**的整条快照，
+ * 这期间敲的字会被一起抹掉。
+ */
+function revertMeta(id: string, fields: Partial<Note>) {
+  const s = store()
+  const cur = s.notes[id]
+  if (!cur) return
+  s.applyNote({ ...cur, ...fields })
+}
 
 export async function createFolder(name: string, parentId: string | null = null) {
   const id = newLocalId()
@@ -733,9 +781,21 @@ export async function createNote(folderId: string | null = null, seed?: { title?
   try {
     s.applyNote(await api.createNote({ id, folderId, title: draft.title, content: draft.content, sortOrder: now }))
   } catch (err) {
-    if (err instanceof OfflineError)
-      enqueue({ kind: 'note.create', id, folderId, title: draft.title, content: draft.content, excerpt: '', sortOrder: now })
-    else s.dropLocal('note', id)
+    /*
+     * 没建成也**不许**把本地这篇扔掉。
+     *
+     * 原来非离线错误直接 dropLocal：笔记从侧栏消失、activeNoteId 被置空、
+     * 编辑区退回空状态，用户在这一两百毫秒里敲进去的字跟着一起没，而且一声不吭。
+     * 按 Ctrl+N 之后立刻开始写是最自然的用法，服务端只要抖一下就会踩中。
+     *
+     * 一律留住并入队：重放时先补建（空内容），随后 flushAll 会用完整正文覆盖上去，
+     * 顺序在 ws.onopen 里是排好的，内容不会丢。
+     */
+    enqueue({ kind: 'note.create', id, folderId, title: draft.title, content: draft.content, excerpt: '', sortOrder: now })
+    if (err instanceof AuthError) onAuthExpired(err.message)
+    else if (!(err instanceof OfflineError)) {
+      s.showToast({ message: '新建的笔记暂时没能同步到云端，内容已存在本机，稍后会自动重试' })
+    }
   }
   return id
 }
@@ -747,20 +807,23 @@ export async function moveNote(id: string, folderId: string | null, sortOrder?: 
   if (!cur) return
   if (cur.folderId === folderId && sortOrder === undefined) return
   const next = sortOrder ?? cur.sortOrder
+  const before = { folderId: cur.folderId, sortOrder: cur.sortOrder }
   s.applyNote({ ...cur, folderId, sortOrder: next })
   const patch = { folderId, sortOrder: next }
   try {
-    s.applyNote(await api.updateNote(id, { ...patch, baseVersion: cur.version }))
+    applyMeta(id, await api.updateNote(id, { ...patch, baseVersion: cur.version }), patch)
   } catch (err) {
     if (err instanceof ConflictError) {
       // 移动不涉及正文，直接基于云端最新版本重试
       try {
-        s.applyNote(await api.updateNote(id, { ...patch, baseVersion: err.note.version }))
+        applyMeta(id, await api.updateNote(id, { ...patch, baseVersion: err.note.version }), patch)
       } catch {
-        s.applyNote(cur)
+        revertMeta(id, before)
       }
+    } else if (err instanceof AuthError) {
+      onAuthExpired(err.message)
     } else if (!(err instanceof OfflineError)) {
-      s.applyNote(cur)
+      revertMeta(id, before)
     }
   }
 }
@@ -769,16 +832,30 @@ export async function deleteNote(id: string) {
   const s = store()
   const cur = s.notes[id]
   if (!cur) return
-  pendingSaves.delete(id)
-  persistPending()
-  s.applyNote({ ...cur, deleted: true })
+
+  /*
+   * 先把还没落库的内容送上去，再删。
+   *
+   * 原来是直接 pendingSaves.delete()：写着写着误删（或者删完又后悔），
+   * 从回收站恢复回来的是删除前**服务端**那一版，最后敲的几句话没了——
+   * 删除是软删、给了撤销按钮，本来就是可逆的操作，不该在这儿悄悄吃掉内容。
+   * 送不上去（离线）也不要紧，pendingSaves 留着，重连时会补。
+   */
+  if (pendingSaves.has(id)) await flushNote(id)
+
+  s.applyNote({ ...s.notes[id], deleted: true })
   if (s.activeNoteId === id) s.setActive(null)
   try {
     s.applyNote(await api.deleteNote(id))
   } catch (err) {
     if (err instanceof OfflineError) enqueue({ kind: 'note.delete', id })
-    else {
-      s.applyNote(cur)
+    else if (err instanceof AuthError) {
+      revertMeta(id, { deleted: false })
+      onAuthExpired(err.message)
+      return
+    } else {
+      // 只把删除标记退回去，别拿 cur 那份旧快照整条盖回来
+      revertMeta(id, { deleted: false })
       return
     }
   }
@@ -833,18 +910,21 @@ export async function setTags(id: string, tags: string[]) {
   const s = store()
   const cur = s.notes[id]
   if (!cur) return
+  const before = { tags: cur.tags }
   s.applyNote({ ...cur, tags })
   try {
-    s.applyNote(await api.updateNote(id, { tags, baseVersion: cur.version }))
+    applyMeta(id, await api.updateNote(id, { tags, baseVersion: cur.version }), { tags })
   } catch (err) {
     if (err instanceof ConflictError) {
       try {
-        s.applyNote(await api.updateNote(id, { tags, baseVersion: err.note.version }))
+        applyMeta(id, await api.updateNote(id, { tags, baseVersion: err.note.version }), { tags })
       } catch {
-        s.applyNote(cur)
+        revertMeta(id, before)
       }
+    } else if (err instanceof AuthError) {
+      onAuthExpired(err.message)
     } else if (!(err instanceof OfflineError)) {
-      s.applyNote(cur)
+      revertMeta(id, before)
     }
   }
 }
@@ -853,16 +933,19 @@ export async function renameNote(id: string, title: string) {
   const s = store()
   const cur = s.notes[id]
   if (!cur) return
+  const before = { title: cur.title }
   s.applyNote({ ...cur, title })
   try {
-    s.applyNote(await api.updateNote(id, { title, baseVersion: cur.version }))
+    applyMeta(id, await api.updateNote(id, { title, baseVersion: cur.version }), { title })
   } catch (err) {
     if (err instanceof ConflictError) {
       try {
-        s.applyNote(await api.updateNote(id, { title, baseVersion: err.note.version }))
+        applyMeta(id, await api.updateNote(id, { title, baseVersion: err.note.version }), { title })
       } catch {
-        s.applyNote(cur)
+        revertMeta(id, before)
       }
+    } else if (err instanceof AuthError) {
+      onAuthExpired(err.message)
     }
   }
 }

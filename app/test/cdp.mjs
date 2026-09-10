@@ -137,6 +137,41 @@ export async function attach(port, { urlPart, name }) {
       }
     },
 
+    /**
+     * 让符合条件的请求收到一个**真实的错误响应**（比如 500）。
+     *
+     * 和 failRequests 不是一回事：那个是网络层直接失败，客户端会当成
+     * OfflineError（离线，入队重试）；这个是连上了、服务端说不行，
+     * 走的是完全不同的分支。「新建笔记失败就把本地那篇扔掉」这类 bug
+     * 只有后者才踩得到。
+     */
+    rejectRequests: async ({ method, urlIncludes, status = 500, body = '{"error":"server error"}', times = 1 }) => {
+      await send('Fetch.enable', { patterns: [{ urlPattern: '*', requestStage: 'Request' }] })
+      let left = times
+      const onPaused = (e) => {
+        const m = JSON.parse(e.data)
+        if (m.method !== 'Fetch.requestPaused') return
+        const { requestId, request } = m.params
+        const hit = left > 0 && request.method === method && request.url.includes(urlIncludes)
+        if (hit) {
+          left--
+          send('Fetch.fulfillRequest', {
+            requestId,
+            responseCode: status,
+            responseHeaders: [{ name: 'content-type', value: 'application/json' }],
+            body: Buffer.from(body, 'utf8').toString('base64'),
+          }).catch(() => {})
+        } else {
+          send('Fetch.continueRequest', { requestId }).catch(() => {})
+        }
+      }
+      ws.addEventListener('message', onPaused)
+      return async () => {
+        ws.removeEventListener('message', onPaused)
+        await send('Fetch.disable', {}).catch(() => {})
+      }
+    },
+
     reload: async () => {
       await evaluate(() => {
         location.reload()

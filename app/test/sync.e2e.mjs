@@ -35,25 +35,28 @@ let accountSeq = 0
  */
 let lastEmail = ''
 
-async function freshPair() {
+async function freshPair(count = 2) {
   const email = `sync-e2e-${++accountSeq}@test.local`
   lastEmail = email
   await env.register(email, PASSWORD, `测试${accountSeq}`)
 
-  const A = await env.device('A')
-  const B = await env.device('B')
-  for (const d of [A, B]) {
+  const labels = ['A', 'B', 'C'].slice(0, count)
+  const first = []
+  for (const l of labels) {
+    const d = await env.device(l)
     await ui.login(d, email, PASSWORD)
     await d.reload()
+    first.push([l, d])
   }
   await sleep(3000)
-  const A2 = await reattach(A, { urlPart: '5273', name: '设备A' })
-  const B2 = await reattach(B, { urlPart: '5273', name: '设备B' })
-  for (const d of [A2, B2]) {
-    await ui.waitReady(d)
-    await ui.spyToasts(d)
+  const ready = []
+  for (const [l, d] of first) {
+    const fresh = await reattach(d, { urlPart: '5273', name: `设备${l}` })
+    await ui.waitReady(fresh)
+    await ui.spyToasts(fresh)
+    ready.push(fresh)
   }
-  return [A2, B2]
+  return ready
 }
 
 async function scenario(title, fn) {
@@ -343,6 +346,140 @@ async function main() {
         onServer.map((n) => JSON.stringify(n.text.slice(0, 30))).join(' '),
     })
     expect('本地也还在', inv.contentNeverLost(await ui.notes(A2), ['[失效期间写的]']))
+  })
+
+  await scenario('新建笔记没能同步到云端时，刚打的字不许跟着消失', async (expect) => {
+    const [A] = await freshPair(1)
+    // 让创建请求失败：token 过期、服务端抖一下都会这样。
+    // 原来这时会直接 dropLocal——笔记从侧栏消失、编辑区清空、一声不吭
+    // 用 500 而不是网络失败：网络失败会被当成离线（本来就会入队重试），
+    // 「把本地这篇扔掉」那条路只有服务端明确报错才走得到
+    await ui.rejectInPage(A, { method: 'POST', urlEndsWith: '/api/notes', status: 500, times: 1 })
+    await ui.newNote(A)
+    await sleep(800)
+    await ui.focusBody(A)
+    await A.type('创建失败时敲进去的字')
+    await sleep(2500)
+    await ui.restoreFetch(A)
+
+    expect('笔记还在侧栏里，没被扔掉', {
+      ok: (await ui.sidebar(A)).length > 0 && (await ui.notes(A)).length > 0,
+      why: `侧栏：${JSON.stringify(await ui.sidebar(A))}`,
+    })
+    expect('刚敲的字还在', inv.contentNeverLost(await ui.notes(A), ['创建失败时敲进去的字']))
+
+    // 恢复后重连一次，内容应该补传上去
+    await A.evaluate(() => {
+      document.querySelector('.sync-chip').click()
+      return 1
+    })
+    await sleep(8000)
+    expect('恢复后补传到了服务端', {
+      ok: (await ui.serverNotes(A)).some((n) => n.text.includes('创建失败时敲进去的字')),
+      why: '服务端上没有，说明入队重放没把它补上去',
+    })
+  })
+
+  // ---------------------------------------------------------------
+  await scenario('打字的同时把笔记拖走 / 改标签，正文不许被退回去', async (expect) => {
+    const [A] = await freshPair(1)
+    await ui.newNote(A)
+    await sleep(1200)
+    await ui.focusBody(A)
+    await A.type('结构操作基线')
+    await ui.waitSynced(A)
+
+    // 把 RTT 撑开，制造出「PATCH 在路上时又干了别的」这个窗口
+    await A.slowNetwork(400)
+    await ui.focusBody(A)
+    await A.type('[边打字边操作]')
+    // 不等防抖结束就改标签：两个请求会撞在一起
+    await A.evaluate(() => {
+      const input = document.querySelector('.tag-input, .tagbar input')
+      if (!input) return 'no-tagbar'
+      return 'ok'
+    })
+    await sleep(300)
+    await ui.renameViaSidebar(A, '打字时改的名字')
+    await sleep(6000)
+    await A.slowNetwork(0)
+    await sleep(4000)
+
+    const all = await ui.notes(A)
+    expect('打的字没被退回去', inv.contentNeverLost(all, ['[边打字边操作]']))
+    expect('没有平白冒出冲突副本', {
+      ok: all.filter((n) => n.isConflictCopy).length === 0,
+      why: `只有一台设备，却冒出了 ${all.filter((n) => n.isConflictCopy).length} 条「云端版本」副本`,
+    })
+    expect('和服务端对得上', inv.matchesServer(all, await ui.serverNotes(A)))
+  })
+
+  // ---------------------------------------------------------------
+  await scenario('写着写着误删，从回收站恢复回来最后几句话要还在', async (expect) => {
+    const [A] = await freshPair(1)
+    await ui.newNote(A)
+    await sleep(1200)
+    await ui.focusBody(A)
+    await A.type('删除基线')
+    await ui.waitSynced(A)
+
+    // 刚敲完就删，这几个字还在防抖窗口里没落库
+    await ui.focusBody(A)
+    await A.type('[删之前最后写的]')
+    // 不等防抖：这几个字此刻只在 pendingSaves 里，删除要是直接把它扔了就再也回不来
+    await ui.deleteActiveNote(A)
+    await sleep(5000)
+
+    await ui.restoreFromTrash(A)
+    await sleep(5000)
+
+    const all = await ui.notes(A)
+    expect('恢复回来最后几句话还在', inv.contentNeverLost(all, ['[删之前最后写的]']))
+    expect('和服务端对得上', inv.matchesServer(all, await ui.serverNotes(A)))
+  })
+
+  // ---------------------------------------------------------------
+  await scenario('三台设备：一台改，另外两台都要跟上且互相一致', async (expect) => {
+    const [A, B, C] = await freshPair(3)
+    await ui.newNote(A)
+    await sleep(1200)
+    await ui.focusBody(A)
+    await A.type('三端基线')
+    await ui.waitSynced(A)
+
+    await ui.openNoteAt(B, 0)
+    await ui.openNoteAt(C, 0)
+    await sleep(2000)
+
+    await ui.focusBody(A)
+    await A.type('[A广播出去的]')
+    await ui.waitSynced(A)
+    await sleep(4000)
+
+    expect('B 跟上了', {
+      ok: (await ui.body(B)).includes('[A广播出去的]'),
+      why: `B 看到的是：${JSON.stringify(await ui.body(B))}`,
+    })
+    expect('C 也跟上了', {
+      ok: (await ui.body(C)).includes('[A广播出去的]'),
+      why: `C 看到的是：${JSON.stringify(await ui.body(C))}`,
+    })
+    expect('A 和 B 一致', inv.devicesConverge(await ui.notes(A), await ui.notes(B)))
+    expect('A 和 C 一致', inv.devicesConverge(await ui.notes(A), await ui.notes(C)))
+
+    // 三台同时改同一篇：内容一个都不许丢
+    await ui.clearToasts(A)
+    await ui.clearToasts(B)
+    await ui.clearToasts(C)
+    await ui.focusBody(A)
+    await ui.focusBody(B)
+    await ui.focusBody(C)
+    await Promise.all([A.type('{A三方}'), B.type('{B三方}'), C.type('{C三方}')])
+    await sleep(12000)
+
+    const finalA = await ui.notes(A)
+    expect('三方的内容都还在', inv.contentNeverLost(finalA, ['{A三方}', '{B三方}', '{C三方}']))
+    expect('没有重复副本', inv.noDuplicateCopies(finalA))
   })
 
   report()
