@@ -9,7 +9,8 @@
     "app": "npm --prefix app run dev",
     "dev": "concurrently -n server,app -c cyan,magenta \"npm run server\" \"npm run app\"",
     "test": "npm --prefix server run test:e2e",
-    "dist": "npm --prefix app run dist"
+    "dist": "npm --prefix app run dist",
+    "test:sync": "npm --prefix app run build && npm --prefix app run test:sync"
   },
   "devDependencies": {
     "concurrently": "^9.1.0"
