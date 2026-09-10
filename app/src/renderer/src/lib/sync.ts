@@ -81,6 +81,11 @@ function restorePending() {
 }
 /** noteId → 最近一次归档出的冲突副本，短时间内的连续冲突复用同一条副本 */
 const activeArchive = new Map<string, { copyId: string; at: number }>()
+/** 同一篇笔记的归档排成一条队，避免并发时建出多条相同的冲突副本 */
+const archiveChain = new Map<string, Promise<unknown>>()
+/** 本端最近一次保存成功的时刻，用来识别「刚存完就被别人的版本盖掉」 */
+const recentSave = new Map<string, number>()
+const RECENT_SAVE_MS = 30_000
 const ARCHIVE_REUSE_MS = 60_000
 
 /* ---------------- 离线操作队列 ---------------- */
@@ -149,7 +154,20 @@ export function start() {
   // 上次没送出去的改动先捡回来，连上之后 flushAll 会补发
   restorePending()
   connectWs()
-  void pullDelta()
+  void syncNow()
+}
+
+/**
+ * 对账一次：**永远先把本地待发的送出去，再拉远端**。
+ *
+ * 顺序反过来会静默吃掉别的设备的改动：pullDelta 的 applyBatch 对「本地正在编辑」的笔记
+ * 会把远端版本号收下（见 store.ts 里那段），随后 flushAll 拿着这个新版本号去 PATCH，
+ * 服务端一比对 baseVersion 是最新的，判不出冲突就直接放行——乐观锁等于被自己解除了。
+ * 断网续写、合盖再打开、切网络，都会走到这里。
+ */
+export async function syncNow() {
+  await flushAll()
+  await pullDelta()
 }
 
 export function stop() {
@@ -252,18 +270,79 @@ function onRemoteNote(remote: Note) {
   }
 
   if (!isEditing || !local) {
+    /*
+     * 热更新：本地没有未落库的改动，直接用远端那一版盖上去。
+     *
+     * 但有一种情况不能一声不吭地盖：两台设备同时在改同一篇时，先保存成功的那台
+     * 会在 markSaved 之后立刻失去 isEditing，紧接着就被后到的那一版热更新覆盖——
+     * 用户眼睁睁看着自己刚敲的字消失，而冲突副本和提示都产生在**另一台**设备上，
+     * 他这边什么都没有。归档由对方负责（重复归档只会多出一条副本），
+     * 这里只补一句告知：至少让他知道字是被谁改没的，去哪儿找。
+     */
+    const justSaved = Date.now() - (recentSave.get(remote.id) ?? 0) < RECENT_SAVE_MS
+    if (justSaved && local && local.content !== remote.content) {
+      s.showToast({
+        message: `「${remote.title?.trim() || '无标题'}」刚在其他设备上被修改，正文已更新为最新版本`,
+      })
+    }
     s.applyNote(remote)
     return
   }
 
-  // 版本对齐：本地内容不动，但接住云端的版本号，下次保存才不会再次冲突
-  s.applyNote({ ...local, version: remote.version, seq: remote.seq })
-  void archiveRemote(remote)
+  /*
+   * 版本对齐：本地内容不动，但接住云端的版本号，下次保存才不会再次冲突。
+   *
+   * **必须等归档真的成功了再对齐。** 对齐是同步的、必然成功；归档是网络请求、可能失败
+   * （比如网络刚恢复、服务端抖一下），而它原来失败是静默吞掉的。先对齐后归档的话，
+   * 一旦归档失败，本地就拿着一个借来的新版本号——下次保存服务端一比对 baseVersion 是最新的，
+   * 判不出冲突直接放行，云端那一版就被无声无息地覆盖了，两台设备都不会有任何提示。
+   * 实测「断网续写 → 重连」丢的就是这一版。
+   *
+   * 归档没成功就把版本号留在旧值上：下次保存自然会撞 409，那条路会重新归档一次。
+   */
+  void archiveRemote(remote).then((archived) => {
+    const cur = store().notes[remote.id]
+    if (!cur) return
+    if (archived) store().applyNote({ ...cur, version: remote.version, seq: remote.seq })
+    else store().setStatus('error')
+  })
 }
 
-/** 把一份云端内容存成冲突副本；短时间内的重复冲突更新同一条副本 */
-async function archiveRemote(remote: Note) {
+/**
+ * 把一份云端内容存成冲突副本；短时间内的重复冲突更新同一条副本。
+ *
+ * 同一篇的归档必须串行。activeArchive 是在 createNote **返回之后**才写进去的，
+ * 两次归档并发进来时，后一次读到的还是空，于是又建一条——用户会看到两条一模一样的
+ * 「云端版本」副本和两条重复提示。串起来之后，后一次进来时前一次已经登记好了，
+ * 会走下面那条复用分支去更新同一条副本。
+ */
+function archiveRemote(remote: Note): Promise<boolean> {
+  const prev = archiveChain.get(remote.id) ?? Promise.resolve()
+  const next = prev.catch(() => {}).then(() => doArchive(remote))
+  archiveChain.set(remote.id, next)
+  void next.catch(() => {}).then(() => {
+    if (archiveChain.get(remote.id) === next) archiveChain.delete(remote.id)
+  })
+  return next
+}
+
+/** 返回是否真的归档成功了——调用方要靠它决定敢不敢收下远端的版本号 */
+async function doArchive(remote: Note): Promise<boolean> {
   const s = store()
+
+  /*
+   * 内容和本地一模一样就没必要建副本。
+   *
+   * 冲突副本是用来留住「不一样的那一版」的，一样的两版留下来只是噪音。
+   * 最常见的来源是关窗：beforeunload 那次 flush 已经到了服务端，页面却已经卸载、
+   * 没收到回执，重开后 restorePending 又补发一次，撞出一场自己跟自己的冲突。
+   * 直接当归档成功放行，版本号照常对齐。
+   */
+  // 只比正文：副本存在的意义是留住不一样的那一版正文。标题在本地缓存里落盘有延迟
+  // （persistCache 是防抖的），关窗那一下经常出现「正文一致、标题一个空一个有」，
+  // 把标题算进来就会为此建一条毫无内容差异的副本
+  const mine = s.notes[remote.id]
+  if (mine && mine.content === remote.content) return true
   const existing = activeArchive.get(remote.id)
   const stamp = new Date().toLocaleString('zh-CN', { hour12: false, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
   const title = `${remote.title || '无标题'}（云端版本 ${stamp}）`
@@ -280,7 +359,7 @@ async function archiveRemote(remote: Note) {
       s.applyNote(updated)
       activeArchive.set(remote.id, { copyId: updated.id, at: Date.now() })
       s.pushNotice({ noteId: remote.id, copyId: updated.id, copyTitle: title, at: Date.now() })
-      return
+      return true
     }
 
     const copy = await api.createNote({
@@ -294,8 +373,11 @@ async function archiveRemote(remote: Note) {
     s.applyNote(copy)
     activeArchive.set(remote.id, { copyId: copy.id, at: Date.now() })
     s.pushNotice({ noteId: remote.id, copyId: copy.id, copyTitle: title, at: Date.now() })
+    return true
   } catch {
-    // 归档失败不能影响用户继续编辑，静默降级
+    // 归档失败不影响用户继续编辑，但**必须**告诉调用方：
+    // 云端那一版没备份下来，谁都不许拿它的版本号去覆盖
+    return false
   }
 }
 
@@ -306,7 +388,22 @@ export async function pullDelta() {
   try {
     s.setStatus('syncing')
     const res = await api.pull(s.lastSeq)
-    s.applyBatch(res.folders, res.notes, res.seq)
+
+    /*
+     * 本地还攒着改动的笔记不能走批量覆盖那条路。
+     *
+     * applyBatch 遇到这种笔记只会「留下本地内容、收下远端版本号」，既不保留远端那一版，
+     * 也不给用户任何提示——远端内容就这么没了。交给 onRemoteNote 单独走一遍，
+     * 它会把云端那一版归档成冲突副本并弹提示，和 WebSocket 推送的处理保持一致。
+     *
+     * 判断用 pendingSaves 而不是 dirtyNoteId：后者是全局单值，任何一篇保存成功
+     * 都会把它清掉（markSaved），拿它当「这篇有没有未落库的改动」并不可靠。
+     */
+    const held = res.notes.filter((n) => pendingSaves.has(n.id) && !n.deleted)
+    const plain = held.length ? res.notes.filter((n) => !pendingSaves.has(n.id) || n.deleted) : res.notes
+
+    s.applyBatch(res.folders, plain, res.seq)
+    for (const n of held) onRemoteNote(n)
     s.setStatus('synced')
   } catch (err) {
     s.setStatus(err instanceof OfflineError ? 'offline' : 'error')
@@ -348,6 +445,7 @@ function scheduleFlush(noteId: string, delay: number) {
  */
 function commitSaved(noteId: string, saved: Note) {
   const s = store()
+  recentSave.set(noteId, Date.now())
   const stillEditing = pendingSaves.has(noteId)
   const local = s.notes[noteId]
   if (stillEditing && local) {
@@ -397,8 +495,14 @@ export async function flushNote(noteId: string) {
       s.setStatus('synced')
     } catch (err) {
       if (err instanceof ConflictError) {
-        // 云端有更新的版本：先把它归档，再用最新版本号把本地内容写上去
-        await archiveRemote(err.note)
+        // 云端有更新的版本：先把它归档，再用最新版本号把本地内容写上去。
+        // 归档没成功就绝不能往下走——那一步会拿云端的版本号把云端内容盖掉，
+        // 而这时它还没有任何备份，等于把别的设备刚写的东西直接删了
+        if (!(await archiveRemote(err.note))) {
+          retainPending(noteId, patch, '云端有更新的版本，暂时没能备份下来')
+          s.setStatus('error')
+          return
+        }
         try {
           const saved = await api.updateNote(noteId, { ...patch, baseVersion: err.note.version })
           commitSaved(noteId, saved)
@@ -694,8 +798,29 @@ export async function renameNote(id: string, title: string) {
   }
 }
 
-/* 关窗前：先同步写进 localStorage（一定来得及），再尽量发一次网络请求 */
+/**
+ * 关窗前想插一脚的（比如编辑器要结算标题）。
+ *
+ * 不能让它们各自去监听 beforeunload：这个模块是在 App 求值时就注册的，
+ * 一定排在组件挂载后注册的监听器前面，等它们跑完，下面的 persistPending 快照和
+ * flushAll 的待发列表早就取完了，那次结算等于白做——「关窗会结算标题」一直没生效。
+ */
+const beforeFlushHooks = new Set<() => void>()
+
+export function onBeforeFlush(fn: () => void) {
+  beforeFlushHooks.add(fn)
+  return () => beforeFlushHooks.delete(fn)
+}
+
+/* 关窗前：先让钩子把话说完，再同步写进 localStorage（一定来得及），最后尽量发一次网络请求 */
 window.addEventListener('beforeunload', () => {
+  for (const fn of beforeFlushHooks) {
+    try {
+      fn()
+    } catch {
+      /* 一个钩子出错不能连累落库 */
+    }
+  }
   persistPending(true)
   void flushAll()
 })

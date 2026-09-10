@@ -206,9 +206,11 @@ export function EditorPane({ onEditorReady, scrollRef }: Props) {
       const ed = editorRef.current
       if (ed) settleTitle(ed, id)
     }
-    window.addEventListener('beforeunload', settle)
+    // 走 sync 的钩子而不是自己监听 beforeunload：直接监听会排在 sync 那个后面，
+    // 结算完再没人把它落库，标题就丢了
+    const off = sync.onBeforeFlush(settle)
     return () => {
-      window.removeEventListener('beforeunload', settle)
+      off()
       settle()
     }
   }, [note?.id, settleTitle])
