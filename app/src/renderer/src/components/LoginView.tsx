@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api, session, DEFAULT_SERVER } from '@/lib/api'
+import * as sync from '@/lib/sync'
 import { useStore } from '@/lib/store'
 import { isDesktop } from '@/lib/platform'
 import { fetchLatestRelease, formatBytes, type UpdateInfo } from '@/lib/update'
@@ -38,6 +39,15 @@ export function LoginView() {
         mode === 'login'
           ? await api.login(email, password)
           : await api.register(email, password, displayName)
+      /*
+       * 换了账号就把上一个账号留下的东西清干净。
+       *
+       * 凭证失效时我们特意保住了本地缓存和待发队列（同账号登回来要补传），
+       * 但要是换了个账号登进来，那些改动既不属于他、也传不上去，
+       * 留着只会让他看见别人的笔记。
+       */
+      const previous = session.user
+      if (previous && previous.id !== res.user.id) sync.forgetLocalData()
       session.save(res.token, res.user)
       setUser(res.user)
     } catch (err) {

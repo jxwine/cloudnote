@@ -1,4 +1,4 @@
-import { api, session, clientId, ConflictError, OfflineError, newLocalId } from './api'
+import { api, session, clientId, AuthError, ConflictError, OfflineError, newLocalId } from './api'
 import { useStore } from './store'
 import type { Note } from './types'
 
@@ -116,6 +116,12 @@ async function replayQueue() {
       if (err instanceof OfflineError) {
         // 还是离线，剩下的原样留到下次
         rest.push(...queue.slice(i))
+        break
+      }
+      if (err instanceof AuthError) {
+        // 凭证失效不是「这条操作有问题」，整队原样留着，别当业务错误丢掉
+        rest.push(...queue.slice(i))
+        onAuthExpired(err.message)
         break
       }
       // 业务错误（比如对象已被别端删除）直接丢弃，避免卡住整个队列
@@ -406,6 +412,10 @@ export async function pullDelta() {
     for (const n of held) onRemoteNote(n)
     s.setStatus('synced')
   } catch (err) {
+    if (err instanceof AuthError) {
+      onAuthExpired(err.message)
+      return
+    }
     s.setStatus(err instanceof OfflineError ? 'offline' : 'error')
   }
 }
@@ -521,6 +531,14 @@ export async function flushNote(noteId: string) {
         s.setStatus('offline')
         return
       }
+      if (err instanceof AuthError) {
+        // 重试一万次也是同样的结果，还会把重试次数耗光。内容留住，停下来等用户重新登录
+        pendingSaves.set(noteId, patch)
+        persistPending()
+        s.applyNote({ ...local, ...patch, updatedAt: Date.now() })
+        onAuthExpired(err.message)
+        return
+      }
       retainPending(noteId, patch, err instanceof Error ? err.message : undefined)
       s.setStatus('error')
     }
@@ -538,18 +556,47 @@ export async function flushNote(noteId: string) {
  * 保存失败后把内容留住等下次重试。但业务错误重试多半也没用，
  * 连续失败几次就放弃并告诉用户，否则它会一直卡在待保存队列里反复撞墙。
  */
+/**
+ * 保存失败了，把内容留住等下次。
+ *
+ * **不管失败多少次，内容都必须放回去。** flushNote 一开始就把这份 patch 从
+ * pendingSaves 和 localStorage 里摘走了，这里是它唯一的落脚点——原来的写法在
+ * 重试次数用尽时既不放回队列、也不写回 store，还顺手 persistPending() 把盘上
+ * 那份也抹了，于是用户切个笔记（setContent 用 store 里的旧内容重置编辑器）
+ * 刚写的东西就永久没了，而他看到的只是一句「未能同步」，还以为过会儿会自己重发。
+ *
+ * 「放弃」放弃的是**自动重试**，不是内容。
+ */
 function retainPending(noteId: string, patch: Patch, reason?: string) {
+  pendingSaves.set(noteId, patch)
+  const local = store().notes[noteId]
+  if (local) store().applyNote({ ...local, ...patch, updatedAt: Date.now() })
+  persistPending()
+
   const times = (saveFailures.get(noteId) ?? 0) + 1
   if (times >= MAX_SAVE_RETRY) {
+    // 计数归零：不再自动撞墙，但用户下次敲字、切笔记或重连时还会再试一次
     saveFailures.delete(noteId)
-    const title = store().notes[noteId]?.title?.trim() || '无标题'
-    store().showToast({ message: `「${title}」保存失败${reason ? '：' + reason : ''}，改动未能同步` })
-    persistPending()
+    const title = local?.title?.trim() || '无标题'
+    store().showToast({
+      message: `「${title}」暂时没能同步${reason ? '：' + reason : ''}。改动已存在本机，联网后会自动补上`,
+    })
     return
   }
   saveFailures.set(noteId, times)
-  pendingSaves.set(noteId, patch)
-  persistPending()
+}
+
+/**
+ * 凭证不作数了。
+ *
+ * 停掉同步别再撞墙，把待发内容原样留着，然后让界面去提示用户重新登录。
+ * 这里**不碰** pendingSaves、不碰缓存——用户手上可能正有没传上去的东西。
+ */
+function onAuthExpired(reason: string) {
+  if (store().authExpired) return
+  stop()
+  store().setStatus('error')
+  store().setAuthExpired(reason)
 }
 
 export async function flushAll() {
@@ -557,6 +604,28 @@ export async function flushAll() {
 }
 
 export const hasPending = () => pendingSaves.size > 0
+
+/**
+ * 把本机攒下的东西全部丢掉：待发的改动、离线操作队列、笔记缓存。
+ *
+ * **只在换账号登录时调用。** 凭证失效那条路特意保住了这些东西，
+ * 为的是同一个账号登回来能把改动补传上去；但换了个人登进来，
+ * 这些既传不上去也不该给他看。
+ */
+export function forgetLocalData() {
+  pendingSaves.clear()
+  saveFailures.clear()
+  saveSince.clear()
+  saveGen.clear()
+  for (const t of saveTimers.values()) clearTimeout(t)
+  saveTimers.clear()
+  activeArchive.clear()
+  archiveChain.clear()
+  recentSave.clear()
+  localStorage.removeItem(PENDING_KEY)
+  localStorage.removeItem(QUEUE_KEY)
+  store().reset()
+}
 
 /* ---------------- 结构性操作（乐观更新 + 离线入队） ---------------- */
 

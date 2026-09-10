@@ -71,6 +71,15 @@ interface State extends CacheShape, UiShape {
   dirtyNoteId: string | null
   notices: ConflictNotice[]
   search: string
+  /**
+   * 登录凭证失效了（token 过期 / 账号被停用）。
+   *
+   * 单独一个状态而不是直接踢回登录页：用户手里可能还有没同步上去的内容，
+   * 一脚踢走顺手 reset() 就把本地缓存清了。先停下来告诉他，
+   * 让他自己点「重新登录」，缓存和待发队列原样留着。
+   */
+  authExpired: string | null
+
   /** 侧栏当前视图：目录树 / 标签 / 回收站 */
   sidebarView: 'tree' | 'tags' | 'trash'
   tagFilter: string | null
@@ -94,6 +103,7 @@ interface State extends CacheShape, UiShape {
   setPanelWidth(side: 'left' | 'right', px: number): void
   setSearch(q: string): void
   setSidebarView(view: 'tree' | 'tags' | 'trash'): void
+  setAuthExpired(reason: string | null): void
   setTagFilter(tag: string | null): void
   jumpToSearchHit(noteId: string): void
   /** 只改「当下生效的配色」，不动用户的选择。系统主题变化走这条 */
@@ -154,6 +164,7 @@ export const useStore = create<State>((set, get) => {
     search: '',
     sidebarView: 'tree',
     tagFilter: null,
+    authExpired: null,
     // 先按记住的选择推一个出来，别等主进程回话——否则深色用户每次启动都要闪一下白
     theme: resolveTheme(ui.themeMode),
     savingAt: null,
@@ -251,6 +262,7 @@ export const useStore = create<State>((set, get) => {
 
     setSearch: (search) => set({ search }),
     setSidebarView: (sidebarView) => set({ sidebarView, tagFilter: null }),
+    setAuthExpired: (authExpired) => set({ authExpired }),
     // 筛选结果显示在标签视图里，返回时能退回标签总览；
     // 同时清掉搜索词，免得两种过滤叠在一起看不出当前在看什么
     setTagFilter: (tagFilter) => set({ tagFilter, sidebarView: 'tags', search: '' }),
@@ -291,6 +303,7 @@ export const useStore = create<State>((set, get) => {
         dialog: null,
         sidebarView: 'tree',
         tagFilter: null,
+        authExpired: null,
       })
     },
   }

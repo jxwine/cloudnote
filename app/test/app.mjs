@@ -195,3 +195,18 @@ export const spyRequests = (dev) =>
   })
 
 export const requests = (dev) => dev.evaluate(() => window.__req || [])
+
+/** 把 token 换成没用的值，模拟过期 / 账号被停用（服务端一律 401） */
+export const breakToken = (dev) =>
+  dev.evaluate(() => {
+    localStorage.setItem('cloudnote.token', 'not-a-valid-token')
+    return 'ok'
+  })
+
+export const authDialogText = (dev) =>
+  dev.evaluate(() => {
+    const d = [...document.querySelectorAll('.dialog')].find((e) =>
+      e.textContent.includes('需要重新登录')
+    )
+    return d ? d.textContent : ''
+  })

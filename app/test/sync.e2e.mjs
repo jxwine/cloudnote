@@ -33,8 +33,11 @@ let accountSeq = 0
  * pull 回来混进断言里，连「打开第 0 篇」都会开错笔记。换账号最省事，
  * 数据天然隔离，也不用为每个场景重启服务。
  */
+let lastEmail = ''
+
 async function freshPair() {
   const email = `sync-e2e-${++accountSeq}@test.local`
+  lastEmail = email
   await env.register(email, PASSWORD, `测试${accountSeq}`)
 
   const A = await env.device('A')
@@ -256,6 +259,90 @@ async function main() {
     expect('每一段都在', inv.contentNeverLost(all, marks))
     expect('和服务端对得上', inv.matchesServer(all, await ui.serverNotes(A)))
     expect('另一端也收到了', inv.contentNeverLost(await ui.notes(B), marks))
+  })
+
+  await scenario('登录失效后继续写，内容不许丢，还要告诉用户', async (expect) => {
+    const [A] = await freshPair()
+    await ui.newNote(A)
+    await sleep(1200)
+    await ui.focusBody(A)
+    await A.type('失效前写的')
+    await ui.waitSynced(A)
+
+    // token 作废（过期、换密钥、账号被停用，服务端一律 401）
+    await ui.breakToken(A)
+
+    // 用户毫不知情地继续写，每次落库都会 401
+    for (let i = 1; i <= 5; i++) {
+      await ui.focusBody(A)
+      await A.type(`[失效后第${i}段]`)
+      await sleep(1300)
+    }
+    await sleep(3000)
+
+    const marks = [1, 2, 3, 4, 5].map((i) => `[失效后第${i}段]`)
+
+    expect('明确告诉用户要重新登录', {
+      ok: (await ui.authDialogText(A)).includes('重新登录'),
+      why: '既没有弹窗也没有提示，用户只会看到状态栏一个红点，以为是网不好',
+    })
+    expect('提示里说清楚了改动还在', {
+      ok: (await ui.authDialogText(A)).includes('没有丢'),
+      why: '用户第一反应是「我刚写的东西是不是没了」，这句必须有',
+    })
+
+    // 最要命的一步：切走再切回来，编辑器会用 store 里的内容重置
+    await ui.newNote(A)
+    await sleep(1500)
+    await ui.openNoteAt(A, 0)
+    await sleep(2000)
+
+    expect('切走再切回来，失效后写的内容还在', inv.contentNeverLost(await ui.notes(A), marks))
+    expect('待发队列还留着，没被清掉', {
+      ok: await A.evaluate(() => !!localStorage.getItem('cloudnote.pending')),
+      why: 'localStorage 里的待发改动被清了，重新登录也补不回来',
+    })
+  })
+
+  await scenario('重新登录后，失效期间写的东西要自动补传上去', async (expect) => {
+    const [A] = await freshPair()
+    const email = lastEmail
+    await ui.newNote(A)
+    await sleep(1200)
+    await ui.focusBody(A)
+    await A.type('补传前')
+    await ui.waitSynced(A)
+
+    await ui.breakToken(A)
+    await ui.focusBody(A)
+    await A.type('[失效期间写的]')
+    await sleep(3500)
+
+    // 用同一个账号点「重新登录」回来
+    await A.evaluate(() => {
+      const btn = [...document.querySelectorAll('.dialog button')].find((b) =>
+        b.textContent.includes('重新登录')
+      )
+      if (!btn) throw new Error('没找到重新登录按钮')
+      btn.click()
+      return 'ok'
+    })
+    await sleep(1500)
+    await ui.login(A, email, PASSWORD)
+    await A.reload()
+    await sleep(4000)
+    const A2 = await reattach(A, { urlPart: '5273', name: '设备A' })
+    await ui.waitReady(A2)
+    await sleep(6000)
+
+    const onServer = await ui.serverNotes(A2)
+    expect('失效期间写的内容传到服务端了', {
+      ok: onServer.some((n) => n.text.includes('[失效期间写的]')),
+      why:
+        '服务端上没有这段内容 —— 提示里承诺了「登回来会自动补传」，没做到就是骗人。服务端现有：' +
+        onServer.map((n) => JSON.stringify(n.text.slice(0, 30))).join(' '),
+    })
+    expect('本地也还在', inv.contentNeverLost(await ui.notes(A2), ['[失效期间写的]']))
   })
 
   report()

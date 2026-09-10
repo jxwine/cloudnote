@@ -3123,3 +3123,27 @@ body.is-reflowing .bubble-bar {
     gap: 10px;
   }
 }
+
+/* ============================ 登录失效 ============================ */
+
+.auth-expired-reason {
+  margin: 0 0 10px;
+  padding: 9px 11px;
+  border-radius: 7px;
+  background: var(--danger-soft);
+  color: var(--danger);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.auth-expired-hint {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.75;
+  color: var(--text-2);
+}
+
+.auth-expired-hint b {
+  color: var(--text);
+  font-weight: 600;
+}

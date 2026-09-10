@@ -11,6 +11,7 @@ import { Toast } from './components/Toast'
 import { PromptDialog } from './components/PromptDialog'
 import { QuickJump } from './components/QuickJump'
 import { SettingsDialog } from './components/SettingsDialog'
+import { AuthExpiredDialog } from './components/AuthExpiredDialog'
 import { UpdateDialog } from './components/UpdateDialog'
 import { AdminApp } from './components/admin/AdminApp'
 import { desktop, isDesktop } from '@/lib/platform'
@@ -277,6 +278,8 @@ function Workspace() {
         <SettingsDialog onClose={() => setSettings(false)} onCheckUpdate={() => void manualCheck()} />
       )}
       {update && <UpdateDialog info={update} onClose={() => setUpdate(null)} />}
+      {/* 凭证失效的提示压在最上面：这时候任何编辑都传不上去，得先把话说清楚 */}
+      <AuthExpiredDialog />
     </div>
   )
 }

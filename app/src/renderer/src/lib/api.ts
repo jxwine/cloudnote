@@ -64,6 +64,19 @@ export class OfflineError extends Error {
   }
 }
 
+/**
+ * 登录凭证不作数了：token 过期（默认 30 天）、密钥换了、账号被停用。
+ *
+ * 必须和普通业务错误分开：普通错误重试可能会成，这个重试一万次也是同样的结果，
+ * 混在一起会一直撞墙，还会把「保存失败」的重试次数耗光——那条路走到头是**丢内容**的。
+ */
+export class AuthError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'AuthError'
+  }
+}
+
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
   const headers: Record<string, string> = { 'x-client-id': clientId }
   const token = session.token
@@ -83,6 +96,8 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 
   const data = await res.json().catch(() => null)
   if (res.status === 409 && data?.conflict) throw new ConflictError(data.note)
+  // 登录接口自己的 401 是「邮箱或密码错误」，那是正常的表单校验结果，不算凭证失效
+  if (res.status === 401 && token) throw new AuthError(data?.error || '登录已失效，请重新登录')
   if (!res.ok) throw new Error(data?.error || `请求失败（${res.status}）`)
   return data as T
 }
