@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { Editor } from '@tiptap/react'
-import { useStore } from '@/lib/store'
-import { session } from '@/lib/api'
+import { resolveTheme, useStore } from '@/lib/store'
 import * as sync from '@/lib/sync'
 import { LoginView } from './components/LoginView'
 import { Sidebar } from './components/Sidebar'
@@ -11,17 +10,14 @@ import { SyncChip } from './components/SyncChip'
 import { Toast } from './components/Toast'
 import { PromptDialog } from './components/PromptDialog'
 import { QuickJump } from './components/QuickJump'
-import { PasswordDialog } from './components/PasswordDialog'
+import { SettingsDialog } from './components/SettingsDialog'
 import { UpdateDialog } from './components/UpdateDialog'
 import { AdminApp } from './components/admin/AdminApp'
-import { exportAll } from '@/lib/export'
-import { isDesktop } from '@/lib/platform'
-import { checkUpdate, fetchLatestRelease, type UpdateInfo } from '@/lib/update'
-import { useContextMenu, type MenuAction } from './components/ContextMenu'
+import { desktop, isDesktop } from '@/lib/platform'
+import { checkUpdate, downloadClient, type UpdateInfo } from '@/lib/update'
 import {
-  IconCloud, IconPanelLeft, IconPanelRight, IconPlus,
-  IconMoon, IconSun, IconLogout, IconMore, IconKey, IconExport, IconJump, IconTrash,
-  IconServer, IconDownload, IconRefresh,
+  IconCloud, IconPanelLeft, IconPanelRight, IconJump, IconTrash,
+  IconServer, IconDownload, IconSettings,
 } from './components/Icons'
 
 export default function App() {
@@ -34,6 +30,8 @@ export default function App() {
     return () => window.removeEventListener('hashchange', onHash)
   }, [])
 
+  useTheme()
+
   if (!user) return <LoginView />
   // 后台只在网页端开放：它是运维用的，浏览器里开就行，没必要占客户端的入口。
   // 非管理员就算手敲了 #/admin 也进不去；服务端接口另有一道 403，这里只是不给看界面。
@@ -43,6 +41,60 @@ export default function App() {
   return <Workspace />
 }
 
+/**
+ * 外观。放在 App 顶层而不是 Workspace 里，登录页才吃得到主题——
+ * 之前那个 effect 在 Workspace 内，没登录时永远是浅色。
+ *
+ * themeMode 是用户记住的选择，theme 是当下实际生效的配色，两者分开：
+ * 选了「跟随系统」时 theme 会跟着系统变，themeMode 始终是 system。
+ */
+function useTheme() {
+  const themeMode = useStore((s) => s.themeMode)
+  const theme = useStore((s) => s.theme)
+  const setTheme = useStore((s) => s.setTheme)
+  const setThemeMode = useStore((s) => s.setThemeMode)
+  /* 桌面端要先跟主进程对完账才能往回写，否则会拿本地的默认值把它盖掉 */
+  const [synced, setSynced] = useState(!isDesktop)
+
+  /*
+   * 桌面端以主进程记的那份为准。
+   *
+   * 两边都存了一份：主进程写 settings.json（同步落盘，还负责冷启动第一帧的窗口底色），
+   * 渲染进程写 localStorage。localStorage 是会丢的——清了站点数据、超了配额、
+   * 进程被强杀时最后一次写入还没刷盘，都会让它退回默认值。让它去覆盖主进程，
+   * 用户就会看到「窗口先是深色、渲染完又变回浅色」。所以启动时反过来，以主进程为准。
+   */
+  useEffect(() => {
+    if (!desktop) return
+    void desktop.info().then((info) => {
+      setThemeMode(info.themeMode)
+      setSynced(true)
+    })
+  }, [setThemeMode])
+
+  useEffect(() => {
+    if (!synced) return
+    if (desktop) {
+      // 交给主进程的 nativeTheme：它顺带把右上角那条系统窗口按钮也改了色，并把选择落盘
+      void desktop.setTheme(themeMode).then(setTheme)
+      // themeSource 被定成 light/dark 之后 shouldUseDarkColors 就固定了，
+      // 系统再怎么变也不会串到这里来
+      return desktop.onThemeChange(setTheme)
+    }
+    // 网页版没有主进程，自己听系统
+    setTheme(resolveTheme(themeMode))
+    if (themeMode !== 'system' || typeof matchMedia !== 'function') return
+    const mq = matchMedia('(prefers-color-scheme: dark)')
+    const onChange = () => setTheme(mq.matches ? 'dark' : 'light')
+    mq.addEventListener('change', onChange)
+    return () => mq.removeEventListener('change', onChange)
+  }, [synced, themeMode, setTheme])
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme
+  }, [theme])
+}
+
 function Workspace() {
   const leftOpen = useStore((s) => s.leftOpen)
   const rightOpen = useStore((s) => s.rightOpen)
@@ -50,10 +102,7 @@ function Workspace() {
   const rightWidth = useStore((s) => s.rightWidth)
   const setPanel = useStore((s) => s.setPanel)
   const activeNoteId = useStore((s) => s.activeNoteId)
-  const theme = useStore((s) => s.theme)
-  const setTheme = useStore((s) => s.setTheme)
   const user = useStore((s) => s.user)
-  const reset = useStore((s) => s.reset)
   const sidebarView = useStore((s) => s.sidebarView)
   const setSidebarView = useStore((s) => s.setSidebarView)
   const trashCount = useStore((s) => Object.values(s.notes).filter((n) => n.deleted).length)
@@ -61,10 +110,9 @@ function Workspace() {
 
   const [editor, setEditor] = useState<Editor | null>(null)
   const [quickJump, setQuickJump] = useState(false)
-  const [changePassword, setChangePassword] = useState(false)
+  const [settings, setSettings] = useState(false)
   const [update, setUpdate] = useState<UpdateInfo | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
-  const menu = useContextMenu()
 
   const onEditorReady = useCallback((e: Editor | null) => setEditor(e), [])
 
@@ -84,18 +132,6 @@ function Workspace() {
       window.removeEventListener('online', onOnline)
     }
   }, [])
-
-  /* 主题：跟随系统，并同步给主进程以刷新标题栏按钮配色 */
-  useEffect(() => {
-    let dispose: (() => void) | undefined
-    void window.cloudnote?.info().then((info) => setTheme(info.theme))
-    dispose = window.cloudnote?.onThemeChange((t) => setTheme(t))
-    return () => dispose?.()
-  }, [setTheme])
-
-  useEffect(() => {
-    document.documentElement.dataset.theme = theme
-  }, [theme])
 
   /* 快捷键：新建笔记、快速跳转、开合两侧栏 */
   useEffect(() => {
@@ -138,74 +174,12 @@ function Workspace() {
     }
   }, [])
 
-  /** 菜单里手动点的那次：查不到也要给个回应，不然像是没反应 */
+  /** 设置里手动点的那次：查不到也要给个回应，不然像是没反应 */
   const manualCheck = async () => {
     const info = await checkUpdate()
     if (info) setUpdate(info)
     else showToast({ message: '已经是最新版本' })
   }
-
-  /** 网页版下载客户端：现拿一次最新版本，直接交给浏览器下 */
-  const downloadClient = async () => {
-    const info = await fetchLatestRelease()
-    if (!info) {
-      showToast({ message: '服务器上还没有发布任何客户端版本' })
-      return
-    }
-    const a = document.createElement('a')
-    a.href = info.downloadUrl
-    a.download = info.filename
-    a.click()
-  }
-
-  const accountActions: (MenuAction | 'separator')[] = [
-    {
-      label: '快速跳转…',
-      icon: <IconJump size={15} />,
-      shortcut: 'Ctrl+P',
-      onSelect: () => setQuickJump(true),
-    },
-    {
-      label: '导出全部笔记',
-      icon: <IconExport size={15} />,
-      onSelect: () => void exportAll(),
-    },
-    'separator',
-    ...(isDesktop
-      ? [{ label: '检查更新', icon: <IconRefresh size={15} />, onSelect: () => void manualCheck() }]
-      : [{ label: '下载 Windows 客户端', icon: <IconDownload size={15} />, onSelect: () => void downloadClient() }]),
-    ...(user?.isAdmin && !isDesktop
-      ? [{ label: '后台管理', icon: <IconServer size={15} />, onSelect: () => { location.hash = '#/admin' } }]
-      : []),
-    'separator' as const,
-    {
-      label: '修改密码',
-      icon: <IconKey size={15} />,
-      onSelect: () => setChangePassword(true),
-    },
-    {
-      label: theme === 'dark' ? '切换到浅色' : '切换到深色',
-      icon: theme === 'dark' ? <IconSun size={15} /> : <IconMoon size={15} />,
-      onSelect: () => {
-        const next = theme === 'dark' ? 'light' : 'dark'
-        setTheme(next)
-        void window.cloudnote?.setTheme(next)
-      },
-    },
-    'separator',
-    {
-      label: '退出登录',
-      icon: <IconLogout size={15} />,
-      danger: true,
-      onSelect: () => {
-        void sync.flushAll().finally(() => {
-          sync.stop()
-          session.clear()
-          reset()
-        })
-      },
-    },
-  ]
 
   return (
     <div className="app">
@@ -231,9 +205,6 @@ function Workspace() {
         >
           <IconPanelRight />
         </button>
-        <button className="icon-btn" title="新建笔记 (Ctrl+N)" onClick={() => void sync.createNote(null)}>
-          <IconPlus />
-        </button>
         <button
           className={'icon-btn has-badge' + (sidebarView === 'trash' ? ' is-on' : '')}
           title={trashCount ? `回收站（${trashCount} 篇）` : '回收站'}
@@ -247,16 +218,26 @@ function Workspace() {
           <IconTrash />
           {trashCount > 0 && <span className="badge">{trashCount > 99 ? '99+' : trashCount}</span>}
         </button>
+        <button className="icon-btn" title="快速跳转 (Ctrl+P)" onClick={() => setQuickJump(true)}>
+          <IconJump />
+        </button>
+        {/* 下面两个只在网页版出现：客户端里下载自己没意义，后台是运维用的，浏览器开就行 */}
+        {!isDesktop && (
+          <button className="icon-btn" title="下载 Windows 客户端" onClick={() => void downloadClient()}>
+            <IconDownload />
+          </button>
+        )}
+        {!isDesktop && user?.isAdmin && (
+          <button className="icon-btn" title="后台管理" onClick={() => { location.hash = '#/admin' }}>
+            <IconServer />
+          </button>
+        )}
 
         <span className="titlebar-spacer" />
 
         <SyncChip />
-        <button
-          className="icon-btn"
-          title={user?.displayName ?? '账号'}
-          onClick={(e) => menu.openAt(e.currentTarget, accountActions)}
-        >
-          <IconMore />
+        <button className="icon-btn" title="设置" onClick={() => setSettings(true)}>
+          <IconSettings />
         </button>
         {/* 给系统的窗口按钮留出位置。网页版没有那三个按钮，留了就是一块空白 */}
         {isDesktop && <span style={{ width: 138, flex: '0 0 auto' }} />}
@@ -290,9 +271,10 @@ function Workspace() {
       <Toast />
       <PromptDialog />
       {quickJump && <QuickJump onClose={() => setQuickJump(false)} />}
-      {changePassword && <PasswordDialog onClose={() => setChangePassword(false)} />}
+      {settings && (
+        <SettingsDialog onClose={() => setSettings(false)} onCheckUpdate={() => void manualCheck()} />
+      )}
       {update && <UpdateDialog info={update} onClose={() => setUpdate(null)} />}
-      {menu.node}
     </div>
   )
 }

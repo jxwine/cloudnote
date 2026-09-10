@@ -249,14 +249,16 @@ re-upload the whole image on every save. 10MB per image; png / jpg / gif / webp 
 The body width follows the window, with margins growing proportionally. The outline on the right
 tracks headings live, jumps on click, and highlights your position as you scroll.
 
-The interface follows the system theme and can also be switched manually from the top-right menu:
+Appearance is chosen in Settings (top right): follow the system, light, or dark. The choice is
+remembered, so the next launch looks the same.
 
 ![Dark theme](screenshot-dark.png)
 
 ## Client updates
 
 The server keeps a list of published builds. The client checks silently 8 seconds after start
-and every 6 hours after that; "检查更新" (Check for updates) in the account menu triggers it manually.
+and every 6 hours after that; "检查更新" (Check for updates) under Settings > 关于 (About) triggers it
+manually and shows the current version next to it.
 
 When a newer version exists, a dialog shows the release notes **exactly as you typed them**
 in the admin panel. "立即更新" downloads in-app with a progress bar, verifies the sha256, and only
@@ -268,7 +270,7 @@ to the user to double-click.
 on the server, and an unsigned app has to disable signature verification on top of that. Not worth
 another dependency here. The cost is no delta downloads and no silent install.
 
-The web version has none of this; instead the login page and the account menu offer
+The web version has none of this; instead the login page and the title bar offer
 "下载 Windows 客户端" (Download the Windows client).
 
 ## Admin panel
@@ -277,7 +279,7 @@ The web version has none of this; instead the login page and the account menu of
 to take up a slot in the desktop client's menu.
 
 Admins are listed in `CLOUDNOTE_ADMINS` in `server/.env` (comma-separated emails). Sign in with a
-normal note account; if the address is on the list, "后台管理" (Admin) appears in the account menu.
+normal note account; if the address is on the list, "后台管理" (Admin) appears in the title bar.
 
 Deliberately not a role column in the database: permissions cannot be changed by accident through
 the UI, and if you lock yourself out, one SSH edit and a restart brings it back. The cost is that

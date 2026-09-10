@@ -11,6 +11,13 @@ interface CacheShape {
   notes: Record<string, Note>
 }
 
+/**
+ * 用户在设置里选的外观，要记住。
+ * 和下面那个 theme 不是一回事：这是「选择」，theme 是「当下实际生效的配色」——
+ * 选了 system 时 theme 会跟着系统在 light/dark 之间来回变，themeMode 始终是 system。
+ */
+export type ThemeMode = 'system' | 'light' | 'dark'
+
 interface UiShape {
   leftOpen: boolean
   rightOpen: boolean
@@ -18,7 +25,15 @@ interface UiShape {
   activeNoteId: string | null
   leftWidth: number
   rightWidth: number
+  themeMode: ThemeMode
 }
+
+/** 系统当前是不是深色。网页端和桌面端都能用，桌面端启动后会被主进程的结果覆盖 */
+const systemPrefersDark = () =>
+  typeof matchMedia === 'function' && matchMedia('(prefers-color-scheme: dark)').matches
+
+export const resolveTheme = (mode: ThemeMode): 'light' | 'dark' =>
+  mode === 'system' ? (systemPrefersDark() ? 'dark' : 'light') : mode
 
 const readCache = (): CacheShape => {
   try {
@@ -38,6 +53,7 @@ const readUi = (): UiShape => {
     activeNoteId: null,
     leftWidth: 248,
     rightWidth: 232,
+    themeMode: 'system',
   }
   try {
     const raw = localStorage.getItem(UI_KEY)
@@ -80,7 +96,10 @@ interface State extends CacheShape, UiShape {
   setSidebarView(view: 'tree' | 'tags' | 'trash'): void
   setTagFilter(tag: string | null): void
   jumpToSearchHit(noteId: string): void
+  /** 只改「当下生效的配色」，不动用户的选择。系统主题变化走这条 */
   setTheme(theme: 'light' | 'dark'): void
+  /** 用户在设置里改外观：记住选择，并立刻按新选择推一个生效值出去 */
+  setThemeMode(mode: ThemeMode): void
   /** 弹出输入框，返回用户输入；取消返回 null，点额外按钮返回空串 */
   prompt(opts: Omit<PromptRequest, 'resolve'>): Promise<string | null>
   closeDialog(value: string | null): void
@@ -96,6 +115,8 @@ let cacheTimer: ReturnType<typeof setTimeout> | null = null
 let uiTimer: ReturnType<typeof setTimeout> | null = null
 
 export const useStore = create<State>((set, get) => {
+  const ui = readUi()
+
   const persistCache = () => {
     if (cacheTimer) clearTimeout(cacheTimer)
     cacheTimer = setTimeout(() => {
@@ -108,20 +129,23 @@ export const useStore = create<State>((set, get) => {
     }, 400)
   }
 
+  const writeUi = () => {
+    const { leftOpen, rightOpen, expanded, activeNoteId, leftWidth, rightWidth, themeMode } = get()
+    localStorage.setItem(
+      UI_KEY,
+      JSON.stringify({ leftOpen, rightOpen, expanded, activeNoteId, leftWidth, rightWidth, themeMode })
+    )
+  }
+
+  /** 拖宽度、开合侧栏这类会连着来的，攒一下再写 */
   const persistUi = () => {
     if (uiTimer) clearTimeout(uiTimer)
-    uiTimer = setTimeout(() => {
-      const { leftOpen, rightOpen, expanded, activeNoteId, leftWidth, rightWidth } = get()
-      localStorage.setItem(
-        UI_KEY,
-        JSON.stringify({ leftOpen, rightOpen, expanded, activeNoteId, leftWidth, rightWidth })
-      )
-    }, 300)
+    uiTimer = setTimeout(writeUi, 300)
   }
 
   return {
     ...readCache(),
-    ...readUi(),
+    ...ui,
     user: session.user,
     status: 'offline',
     peers: 0,
@@ -130,7 +154,8 @@ export const useStore = create<State>((set, get) => {
     search: '',
     sidebarView: 'tree',
     tagFilter: null,
-    theme: 'light',
+    // 先按记住的选择推一个出来，别等主进程回话——否则深色用户每次启动都要闪一下白
+    theme: resolveTheme(ui.themeMode),
     savingAt: null,
     toast: null,
     dialog: null,
@@ -235,6 +260,13 @@ export const useStore = create<State>((set, get) => {
       persistUi()
     },
     setTheme: (theme) => set({ theme }),
+
+    setThemeMode: (themeMode) => {
+      set({ themeMode, theme: resolveTheme(themeMode) })
+      // 立刻写，不走防抖：改完主题随手关掉标签页的话，攒着的那次写就没了。
+      // 这个动作一次只来一下，不像拖宽度那样连着触发，没有攒的必要
+      writeUi()
+    },
 
     showToast: (t) => set({ toast: { ...t, id: Date.now() } }),
     hideToast: () => set({ toast: null }),

@@ -1,5 +1,6 @@
 import { api, fileUrl } from './api'
 import { desktop, isDesktop } from './platform'
+import { useStore } from './store'
 import type { Release } from './types'
 
 /**
@@ -54,6 +55,22 @@ export async function fetchLatestRelease(): Promise<UpdateInfo | null> {
   } catch {
     return null
   }
+}
+
+/**
+ * 网页版下载客户端：现拿一次最新版本，直接交给浏览器下。
+ * 顶部按钮和设置里的「关于」都走这里，别各写一份。
+ */
+export async function downloadClient(): Promise<void> {
+  const info = await fetchLatestRelease()
+  if (!info) {
+    useStore.getState().showToast({ message: '服务器上还没有发布任何客户端版本' })
+    return
+  }
+  const a = document.createElement('a')
+  a.href = info.downloadUrl
+  a.download = info.filename
+  a.click()
 }
 
 export function formatBytes(n: number): string {

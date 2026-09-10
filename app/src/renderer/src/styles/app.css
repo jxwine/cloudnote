@@ -2954,3 +2954,172 @@ body.is-reflowing .bubble-bar {
     padding: 20px 14px;
   }
 }
+
+/* ============================ 设置 ============================
+   左边分类、右边内容。分类是一列而不是横排标签页，是因为以后设置项
+   只会越加越多，竖着排加一项不用重新排版。 */
+
+.dialog.settings {
+  max-width: 620px;
+  padding: 0;
+  overflow: hidden;
+}
+
+.settings-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 12px 12px 18px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.settings-head .dialog-title {
+  margin-bottom: 0;
+}
+
+.settings-body {
+  display: flex;
+  min-height: 268px;
+}
+
+.settings-nav {
+  flex: 0 0 132px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 12px 8px;
+  border-right: 1px solid var(--line-soft);
+  background: var(--surface);
+}
+
+.settings-nav-item {
+  display: block;
+  width: 100%;
+  padding: 7px 10px;
+  border-radius: 7px;
+  text-align: left;
+  font-size: 13px;
+  color: var(--text-2);
+  transition: background 0.13s, color 0.13s;
+}
+
+.settings-nav-item:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.settings-nav-item.is-active {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 550;
+}
+
+.settings-panel {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 18px 18px;
+}
+
+.settings-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.settings-row:last-child {
+  border-bottom: none;
+}
+
+.settings-row-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.settings-row-title {
+  font-size: 13.5px;
+  color: var(--text);
+}
+
+.settings-row-hint {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-3);
+}
+
+.settings-account {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 0 14px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.settings-avatar {
+  width: 34px;
+  height: 34px;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 15px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+/* 三选一的分段控件。用它而不是下拉：三个选项一眼看全，少一次点击 */
+.segmented {
+  display: inline-flex;
+  flex: 0 0 auto;
+  padding: 2px;
+  gap: 2px;
+  border-radius: 8px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+}
+
+.segmented-item {
+  padding: 5px 11px;
+  border-radius: 6px;
+  font-size: 12.5px;
+  color: var(--text-2);
+  white-space: nowrap;
+  transition: background 0.13s, color 0.13s;
+}
+
+.segmented-item:hover {
+  color: var(--text);
+}
+
+.segmented-item.is-on {
+  background: var(--raised);
+  color: var(--text);
+  font-weight: 550;
+  box-shadow: 0 1px 2px rgba(24, 26, 30, 0.08);
+}
+
+@media (max-width: 620px) {
+  .settings-body {
+    flex-direction: column;
+    min-height: 0;
+  }
+  .settings-nav {
+    flex: 0 0 auto;
+    flex-direction: row;
+    overflow-x: auto;
+    border-right: none;
+    border-bottom: 1px solid var(--line-soft);
+  }
+  .settings-row {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 10px;
+  }
+}

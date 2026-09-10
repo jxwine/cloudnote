@@ -4,7 +4,10 @@ const api = {
   info: () => ipcRenderer.invoke('app:info') as Promise<{
     version: string
     platform: string
+    /** 当下实际生效的配色 */
     theme: 'light' | 'dark'
+    /** 主进程记住的外观选择，只用来对账；权威在渲染进程的 localStorage */
+    themeMode: 'light' | 'dark' | 'system'
   }>,
   setTheme: (mode: 'light' | 'dark' | 'system') =>
     ipcRenderer.invoke('theme:set', mode) as Promise<'light' | 'dark'>,

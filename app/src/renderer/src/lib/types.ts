@@ -122,7 +122,14 @@ export interface AdminStats {
 declare global {
   interface Window {
     cloudnote?: {
-      info(): Promise<{ version: string; platform: string; theme: 'light' | 'dark' }>
+      info(): Promise<{
+        version: string
+        platform: string
+        /** 当下实际生效的配色 */
+        theme: 'light' | 'dark'
+        /** 主进程记住的外观选择，桌面端以它为准 */
+        themeMode: 'light' | 'dark' | 'system'
+      }>
       setTheme(mode: 'light' | 'dark' | 'system'): Promise<'light' | 'dark'>
       exportFile(name: string, content: string): Promise<{ ok: boolean; path?: string }>
       exportFolder(

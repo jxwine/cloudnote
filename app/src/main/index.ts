@@ -1,7 +1,7 @@
 import { app, shell, BrowserWindow, ipcMain, nativeTheme, dialog, Tray, Menu, net } from 'electron'
 import { join, dirname, basename } from 'node:path'
 import { fork, type ChildProcess } from 'node:child_process'
-import { existsSync, writeFileSync, mkdirSync, createWriteStream, rmSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync, mkdirSync, createWriteStream, rmSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
@@ -34,6 +34,38 @@ const overlayFor = (dark: boolean) => ({
   symbolColor: dark ? '#9b9da3' : '#6b6d77', // --text-2
   height: 40, // --titlebar-h
 })
+
+type ThemeMode = 'system' | 'light' | 'dark'
+
+/**
+ * 主进程这边也存一份外观选择，只为了冷启动那一帧。
+ *
+ * 用户的选择本身记在渲染进程的 localStorage 里（那是权威，网页版也只有它），
+ * 但窗口的 backgroundColor 和 titleBarOverlay 在渲染进程跑起来之前就得定色，
+ * 那时候读不到 localStorage。不存这一份的话，深色用户每次启动都会先看见
+ * 一个白底窗口和一排浅色的系统按钮，过几百毫秒才刷成深色。
+ */
+const settingsFile = () => join(app.getPath('userData'), 'settings.json')
+
+function readThemeMode(): ThemeMode {
+  try {
+    const raw = JSON.parse(readFileSync(settingsFile(), 'utf8')) as { themeMode?: ThemeMode }
+    if (raw.themeMode === 'light' || raw.themeMode === 'dark' || raw.themeMode === 'system') {
+      return raw.themeMode
+    }
+  } catch {
+    /* 没有或者坏了都当默认，不值得为它报错 */
+  }
+  return 'system'
+}
+
+function writeThemeMode(mode: ThemeMode): void {
+  try {
+    writeFileSync(settingsFile(), JSON.stringify({ themeMode: mode }), 'utf8')
+  } catch {
+    /* 写不进去只影响下次启动的首帧，不该打断用户 */
+  }
+}
 
 function createWindow(): void {
   const dark = nativeTheme.shouldUseDarkColors
@@ -181,10 +213,14 @@ app.whenReady().then(() => {
   if (!isPrimaryInstance) return
   if (!isDev && __USE_BUNDLED_SERVER__) startBundledServer()
 
+  // 必须在 createWindow 之前：窗口一建出来就要按这个颜色画底和系统按钮
+  nativeTheme.themeSource = readThemeMode()
+
   ipcMain.handle('app:info', () => ({
     version: app.getVersion(),
     platform: process.platform,
     theme: nativeTheme.shouldUseDarkColors ? 'dark' : 'light',
+    themeMode: nativeTheme.themeSource as ThemeMode,
   }))
 
   /** 导出单篇：弹保存对话框 */
@@ -298,8 +334,9 @@ app.whenReady().then(() => {
     setTimeout(() => app.quit(), 800)
   })
 
-  ipcMain.handle('theme:set', (_e, mode: 'light' | 'dark' | 'system') => {
+  ipcMain.handle('theme:set', (_e, mode: ThemeMode) => {
     nativeTheme.themeSource = mode
+    writeThemeMode(mode)
     const isDark = nativeTheme.shouldUseDarkColors
     mainWindow?.setTitleBarOverlay?.(overlayFor(isDark))
     return isDark ? 'dark' : 'light'
