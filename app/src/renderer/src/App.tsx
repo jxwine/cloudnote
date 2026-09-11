@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { Editor } from '@tiptap/react'
-import { resolveTheme, useStore } from '@/lib/store'
+import { resolveTheme, useStore, useBindings, currentBindings } from '@/lib/store'
+import { comboFromEvent, findShortcut, formatCombo } from '@/lib/shortcuts'
 import * as sync from '@/lib/sync'
 import { LoginView } from './components/LoginView'
 import { Sidebar } from './components/Sidebar'
@@ -94,9 +95,19 @@ function useTheme() {
   useEffect(() => {
     document.documentElement.dataset.theme = theme
   }, [theme])
+
+  // 排版设置挂成 CSS 变量，app.css 里 .ProseMirror 读它们；登录页没有编辑器，挂上也无妨
+  const lineHeight = useStore((s) => s.lineHeight)
+  const paragraphSpacing = useStore((s) => s.paragraphSpacing)
+  useEffect(() => {
+    const root = document.documentElement.style
+    root.setProperty('--doc-line-height', String(lineHeight))
+    root.setProperty('--doc-para-gap', `${paragraphSpacing}em`)
+  }, [lineHeight, paragraphSpacing])
 }
 
 function Workspace() {
+  const bindings = useBindings()
   const leftOpen = useStore((s) => s.leftOpen)
   const rightOpen = useStore((s) => s.rightOpen)
   const leftWidth = useStore((s) => s.leftWidth)
@@ -136,21 +147,20 @@ function Workspace() {
     }
   }, [])
 
-  /* 快捷键：新建笔记、快速跳转、开合两侧栏 */
+  /* 快捷键：新建笔记、快速跳转、开合两侧栏。绑定表每次现取，改了设置立刻生效 */
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (!(e.ctrlKey || e.metaKey)) return
-      const k = e.key.toLowerCase()
-      if (k === 'n' && !e.shiftKey) {
+      const id = findShortcut(currentBindings(), comboFromEvent(e))
+      if (id === 'newNote') {
         e.preventDefault()
         void sync.createNote(null)
-      } else if (k === 'p' && !e.shiftKey) {
+      } else if (id === 'quickJump') {
         e.preventDefault()
         setQuickJump(true)
-      } else if (k === '\\') {
+      } else if (id === 'toggleLeft') {
         e.preventDefault()
         setPanel('left', !useStore.getState().leftOpen)
-      } else if (k === '/' && e.shiftKey) {
+      } else if (id === 'toggleRight') {
         e.preventDefault()
         setPanel('right', !useStore.getState().rightOpen)
       }
@@ -194,7 +204,7 @@ function Workspace() {
 
         <button
           className={'icon-btn' + (leftOpen ? ' is-on' : '')}
-          title="目录栏 (Ctrl+\)"
+          title={`目录栏 (${formatCombo(bindings.toggleLeft)})`}
           aria-pressed={leftOpen}
           onClick={() => setPanel('left', !leftOpen)}
         >
@@ -202,7 +212,7 @@ function Workspace() {
         </button>
         <button
           className={'icon-btn' + (rightOpen ? ' is-on' : '')}
-          title="大纲栏 (Ctrl+Shift+/)"
+          title={`大纲栏 (${formatCombo(bindings.toggleRight)})`}
           aria-pressed={rightOpen}
           onClick={() => setPanel('right', !rightOpen)}
         >
@@ -221,7 +231,7 @@ function Workspace() {
           <IconTrash />
           {trashCount > 0 && <span className="badge">{trashCount > 99 ? '99+' : trashCount}</span>}
         </button>
-        <button className="icon-btn" title="快速跳转 (Ctrl+P)" onClick={() => setQuickJump(true)}>
+        <button className="icon-btn" title={`快速跳转 (${formatCombo(bindings.quickJump)})`} onClick={() => setQuickJump(true)}>
           <IconJump />
         </button>
         {/* 下面两个只在网页版出现：客户端里下载自己没意义，后台是运维用的，浏览器开就行 */}

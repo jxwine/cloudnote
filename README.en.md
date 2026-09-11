@@ -316,7 +316,7 @@ would spawn a second bundled server fighting over the same port.
 
 | Shortcut | Action |
 |---|---|
-| `Ctrl+N` | New note |
+| `Ctrl+D` | New note |
 | `Ctrl+P` | Quick jump to a note |
 | `Ctrl+S` | Save now |
 | `Ctrl+\` | Toggle the folder pane |

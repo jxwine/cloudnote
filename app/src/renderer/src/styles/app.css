@@ -592,17 +592,35 @@ textarea {
 
 /* ============================ ProseMirror 排版 ============================ */
 
+/* 行距和段间距是设置里可调的，变量由 App 挂在 html 上，兜底值和 store 里的默认一致 */
 .ProseMirror {
   outline: none;
   font-family: var(--font-doc);
   font-size: 15.5px;
-  line-height: 1.82;
+  line-height: var(--doc-line-height, 1.8);
   color: var(--text);
   word-wrap: break-word;
 }
 
-.ProseMirror > * + * {
-  margin-top: 0.85em;
+/*
+ * 浏览器给 p / ul / pre / blockquote 自带 1em 的上下外边距，和下面那条段间距的 margin-top
+ * 折叠之后取大者——段间距调到 1em 以下就毫无反应（真踩过）。所以先把块级子元素的上下外边距
+ * 清零，块与块之间只由段间距那一条说了算。引用和表格单元格里的段落也一样处理。
+ * 标题、分割线自己的 margin-top 规则选择器更具体，仍然优先。
+ */
+.ProseMirror > *,
+.ProseMirror blockquote > *,
+.ProseMirror td > *,
+.ProseMirror th > * {
+  margin-top: 0;
+  margin-bottom: 0;
+}
+
+.ProseMirror > * + *,
+.ProseMirror blockquote > * + *,
+.ProseMirror td > * + *,
+.ProseMirror th > * + * {
+  margin-top: var(--doc-para-gap, 1em);
 }
 
 .ProseMirror h1,
@@ -1115,6 +1133,12 @@ textarea {
 .btn-ghost:hover {
   background: var(--hover);
   color: var(--text);
+}
+
+.btn-ghost:disabled {
+  color: var(--text-3);
+  background: none;
+  cursor: default;
 }
 
 /* ============================ 登录 ============================ */
@@ -2977,9 +3001,10 @@ body.is-reflowing .bubble-bar {
   margin-bottom: 0;
 }
 
+/* 高度定死：每一页内容多少不一样，跟着内容伸缩的话切页时整个弹窗会跳 */
 .settings-body {
   display: flex;
-  min-height: 268px;
+  height: min(440px, 70vh);
 }
 
 .settings-nav {
@@ -3103,6 +3128,104 @@ body.is-reflowing .bubble-bar {
   color: var(--text);
   font-weight: 550;
   box-shadow: 0 1px 2px rgba(24, 26, 30, 0.08);
+}
+
+/* 滑块行：原生 range 上一层主题色就够了，右边固定宽度放数值，拖的时候不抖 */
+.slider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 0 0 auto;
+}
+
+.slider input[type='range'] {
+  width: 160px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.slider-value {
+  min-width: 2.4em;
+  text-align: right;
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-2);
+}
+
+/* 「默认」链接只在偏离默认值时出现，占位留着，免得一出现把旁边的控件挤走 */
+.reset-link {
+  min-width: 2.5em;
+  font-size: 12px;
+  color: var(--accent);
+  visibility: hidden;
+}
+
+.reset-link.is-visible {
+  visibility: visible;
+}
+
+.reset-link:hover {
+  text-decoration: underline;
+}
+
+/* 快捷键：按键样式的胶囊。可改的那种是按钮，点了进入录制态 */
+.shortcut {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 0 0 auto;
+}
+
+.kbd,
+.kbd-btn {
+  display: inline-block;
+  min-width: 5.5em;
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-family: var(--font-ui);
+  font-size: 12.5px;
+  text-align: center;
+  white-space: nowrap;
+  color: var(--text-2);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  box-shadow: inset 0 -1.5px 0 var(--line);
+}
+
+.kbd-btn {
+  cursor: pointer;
+  transition: border-color 0.13s, color 0.13s;
+}
+
+.kbd-btn:hover {
+  color: var(--text);
+  border-color: var(--text-3);
+}
+
+.kbd-btn.is-recording {
+  color: var(--accent);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+  animation: kbd-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes kbd-pulse {
+  50% {
+    box-shadow: 0 0 0 5px var(--accent-soft);
+  }
+}
+
+.settings-group {
+  margin-top: 18px;
+  padding: 0 0 6px;
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+/* 内容超出定死的高度时（快捷键那页）面板自己滚 */
+.settings-panel {
+  min-height: 0;
+  overflow-y: auto;
 }
 
 /* 开关。只做开/关两态，尺寸和分段控件一行高，放在同一列里不跳 */

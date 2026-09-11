@@ -4,7 +4,8 @@ import { useContextMenu, type MenuAction } from './ContextMenu'
 import { pickAndInsertImage } from '@/lib/images'
 import { setLink } from '@/lib/links'
 import { ColorPicker } from './ColorPicker'
-import { useStore } from '@/lib/store'
+import { useStore, useBindings } from '@/lib/store'
+import { formatCombo } from '@/lib/shortcuts'
 import {
   IconBold, IconItalic, IconStrike, IconCode, IconLink,
   IconList, IconListOrdered, IconTask, IconQuote, IconCodeBlock,
@@ -40,6 +41,7 @@ function useEditorTick(editor: Editor | null) {
 export function EditorToolbar({ editor }: { editor: Editor | null }) {
   useEditorTick(editor)
   const menu = useContextMenu()
+  const bindings = useBindings()
 
   if (!editor) return <div className="editor-bar" />
 
@@ -110,7 +112,7 @@ export function EditorToolbar({ editor }: { editor: Editor | null }) {
       <ColorPicker editor={editor} kind="text" />
       <ColorPicker editor={editor} kind="highlight" />
       {btn('code', '行内代码', <IconCode />, () => editor.chain().focus().toggleCode().run(), editor.isActive('code'))}
-      {btn('link', '链接 (Ctrl+K)', <IconLink />, () => void setLink(editor), editor.isActive('link'))}
+      {btn('link', `链接 (${formatCombo(bindings.link)})`, <IconLink />, () => void setLink(editor), editor.isActive('link'))}
 
       <span className="bar-divider" />
 

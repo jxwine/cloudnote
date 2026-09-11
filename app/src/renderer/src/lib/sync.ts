@@ -786,7 +786,7 @@ export async function createNote(folderId: string | null = null, seed?: { title?
      *
      * 原来非离线错误直接 dropLocal：笔记从侧栏消失、activeNoteId 被置空、
      * 编辑区退回空状态，用户在这一两百毫秒里敲进去的字跟着一起没，而且一声不吭。
-     * 按 Ctrl+N 之后立刻开始写是最自然的用法，服务端只要抖一下就会踩中。
+     * 按快捷键新建之后立刻开始写是最自然的用法，服务端只要抖一下就会踩中。
      *
      * 一律留住并入队：重放时先补建（空内容），随后 flushAll 会用完整正文覆盖上去，
      * 顺序在 ws.onopen 里是排好的，内容不会丢。

@@ -1,17 +1,26 @@
 import { useEffect, useState } from 'react'
 import { session } from '@/lib/api'
 import { isDesktop, desktop } from '@/lib/platform'
-import { useStore, type ThemeMode } from '@/lib/store'
+import { useStore, useBindings, TYPOGRAPHY, type ThemeMode } from '@/lib/store'
+import {
+  SHORTCUTS,
+  EDITOR_SHORTCUTS,
+  bindingProblem,
+  comboFromEvent,
+  formatCombo,
+  type ShortcutId,
+} from '@/lib/shortcuts'
 import * as sync from '@/lib/sync'
 import { downloadClient } from '@/lib/update'
 import { PasswordDialog } from './PasswordDialog'
 import { IconClose } from './Icons'
 
-type Section = 'general' | 'appearance' | 'account' | 'about'
+type Section = 'general' | 'appearance' | 'shortcuts' | 'account' | 'about'
 
 /* 分类和设置项都由数组/JSX 段落驱动，以后加一类就是加一条，不用动布局 */
 const SECTIONS: { key: Section; label: string }[] = [
   { key: 'appearance', label: '外观' },
+  { key: 'shortcuts', label: '快捷键' },
   { key: 'account', label: '账号' },
   // 「通用」里目前只有开机自启这种桌面端才有的东西，网页版没有内容就不列出来
   ...(isDesktop ? [{ key: 'general' as const, label: '通用' }] : []),
@@ -42,9 +51,19 @@ export function SettingsDialog({ onClose, onCheckUpdate }: Props) {
   const [version, setVersion] = useState('')
   /** null = 还没从系统读回来，这段时间开关先禁用，免得点一下又被回读值盖掉 */
   const [autoLaunch, setAutoLaunch] = useState<boolean | null>(null)
+  /** 正在录制新组合键的那一条；录制中 Esc 是取消录制，不关设置 */
+  const [recording, setRecording] = useState<ShortcutId | null>(null)
 
   const themeMode = useStore((s) => s.themeMode)
   const setThemeMode = useStore((s) => s.setThemeMode)
+  const lineHeight = useStore((s) => s.lineHeight)
+  const setLineHeight = useStore((s) => s.setLineHeight)
+  const paragraphSpacing = useStore((s) => s.paragraphSpacing)
+  const setParagraphSpacing = useStore((s) => s.setParagraphSpacing)
+  const bindings = useBindings()
+  const overrides = useStore((s) => s.shortcuts)
+  const setShortcut = useStore((s) => s.setShortcut)
+  const resetShortcuts = useStore((s) => s.resetShortcuts)
   const user = useStore((s) => s.user)
   const reset = useStore((s) => s.reset)
   const showToast = useStore((s) => s.showToast)
@@ -66,11 +85,44 @@ export function SettingsDialog({ onClose, onCheckUpdate }: Props) {
   useEffect(() => {
     // 改密码弹窗开着时把 Esc 让给它，否则一下关掉两层
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && !changePassword) onClose()
+      if (e.key === 'Escape' && !changePassword && !recording) onClose()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [onClose, changePassword])
+  }, [onClose, changePassword, recording])
+
+  /**
+   * 录制组合键。挂在捕获阶段并截断传播：录制时按下的 Ctrl+N 是「我要绑这个」，
+   * 不能真的去新建一篇笔记，也不能让 Tiptap 或上面那个 Esc 处理器看到。
+   */
+  useEffect(() => {
+    if (!recording) return
+    const onKey = (e: KeyboardEvent) => {
+      e.preventDefault()
+      e.stopPropagation()
+      if (e.key === 'Escape') {
+        setRecording(null)
+        return
+      }
+      const combo = comboFromEvent(e)
+      if (!combo) {
+        // 只按了修饰键是中间态，等着；按了个不带 Ctrl/Alt 的键才需要提醒
+        if (!/^(Control|Alt|Shift|Meta)/.test(e.code)) {
+          showToast({ message: '要带上 Ctrl 或 Alt，否则会和正常打字冲突' })
+        }
+        return
+      }
+      const problem = bindingProblem(bindings, recording, combo)
+      if (problem) {
+        showToast({ message: problem })
+        return
+      }
+      setShortcut(recording, combo)
+      setRecording(null)
+    }
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [recording, bindings, setShortcut, showToast])
 
   /** 退出前先把没落库的改动推上去，别让用户丢字 */
   const logout = () => {
@@ -124,21 +176,85 @@ export function SettingsDialog({ onClose, onCheckUpdate }: Props) {
               )}
 
               {section === 'appearance' && (
-                <Row title="主题" hint="选定后一直记着，下次打开还是这个">
-                  <div className="segmented" role="radiogroup" aria-label="主题">
-                    {THEME_OPTIONS.map((o) => (
-                      <button
-                        key={o.value}
-                        role="radio"
-                        aria-checked={themeMode === o.value}
-                        className={'segmented-item' + (themeMode === o.value ? ' is-on' : '')}
-                        onClick={() => setThemeMode(o.value)}
-                      >
-                        {o.label}
-                      </button>
-                    ))}
-                  </div>
-                </Row>
+                <>
+                  <Row title="主题" hint="选定后一直记着，下次打开还是这个">
+                    <div className="segmented" role="radiogroup" aria-label="主题">
+                      {THEME_OPTIONS.map((o) => (
+                        <button
+                          key={o.value}
+                          role="radio"
+                          aria-checked={themeMode === o.value}
+                          className={'segmented-item' + (themeMode === o.value ? ' is-on' : '')}
+                          onClick={() => setThemeMode(o.value)}
+                        >
+                          {o.label}
+                        </button>
+                      ))}
+                    </div>
+                  </Row>
+                  <Row title="行距" hint="正文每行的高度，拖的时候编辑器里立刻能看到">
+                    <Slider
+                      label="行距"
+                      range={TYPOGRAPHY.lineHeight}
+                      value={lineHeight}
+                      onChange={setLineHeight}
+                    />
+                  </Row>
+                  <Row title="段间距" hint="段落之间留多少空，标题上下的间距不受影响">
+                    <Slider
+                      label="段间距"
+                      range={TYPOGRAPHY.paragraphSpacing}
+                      value={paragraphSpacing}
+                      onChange={setParagraphSpacing}
+                    />
+                  </Row>
+                </>
+              )}
+
+              {section === 'shortcuts' && (
+                <>
+                  <Row title="恢复默认" hint="把下面改过的快捷键全部退回默认">
+                    <button
+                      className="btn-ghost"
+                      disabled={Object.keys(overrides).length === 0}
+                      onClick={resetShortcuts}
+                    >
+                      全部恢复默认
+                    </button>
+                  </Row>
+                  {SHORTCUTS.map((def) => {
+                    const isRecording = recording === def.id
+                    const changed = def.id in overrides
+                    return (
+                      <Row key={def.id} title={def.label} hint={def.hint}>
+                        <div className="shortcut">
+                          <button
+                            className={'reset-link' + (changed ? ' is-visible' : '')}
+                            tabIndex={changed ? 0 : -1}
+                            onClick={() => setShortcut(def.id, null)}
+                          >
+                            默认
+                          </button>
+                          <button
+                            className={'kbd-btn' + (isRecording ? ' is-recording' : '')}
+                            title="点击后按下新的组合键"
+                            onClick={() => setRecording(isRecording ? null : def.id)}
+                            onBlur={() => isRecording && setRecording(null)}
+                          >
+                            {isRecording ? '按下新的组合键…' : formatCombo(bindings[def.id])}
+                          </button>
+                        </div>
+                      </Row>
+                    )
+                  })}
+
+                  <div className="settings-group">编辑器内的格式快捷键（内置，不能改）</div>
+                  {EDITOR_SHORTCUTS.map((sc) => (
+                    <Row key={sc.label} title={sc.label}>
+                      <kbd className="kbd">{sc.display ?? formatCombo(sc.combo)}</kbd>
+                    </Row>
+                  ))}
+                </>
               )}
 
               {section === 'account' && (
@@ -183,6 +299,42 @@ export function SettingsDialog({ onClose, onCheckUpdate }: Props) {
 
       {changePassword && <PasswordDialog onClose={() => setChangePassword(false)} />}
     </>
+  )
+}
+
+/** 滑块加数值，偏离默认时多一个「默认」能一键回去 */
+function Slider({
+  label,
+  range,
+  value,
+  onChange,
+}: {
+  label: string
+  range: { min: number; max: number; step: number; default: number }
+  value: number
+  onChange: (v: number) => void
+}) {
+  const isDefault = Math.abs(value - range.default) < 1e-9
+  return (
+    <div className="slider">
+      <button
+        className={'reset-link' + (isDefault ? '' : ' is-visible')}
+        tabIndex={isDefault ? -1 : 0}
+        onClick={() => onChange(range.default)}
+      >
+        默认
+      </button>
+      <input
+        type="range"
+        aria-label={label}
+        min={range.min}
+        max={range.max}
+        step={range.step}
+        value={value}
+        onChange={(e) => onChange(Number(e.target.value))}
+      />
+      <span className="slider-value">{value.toFixed(1)}</span>
+    </div>
   )
 }
 

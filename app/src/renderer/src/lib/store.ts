@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import type { ConflictNotice, Folder, Note, PromptRequest, SyncStatus, Toast, User } from './types'
 import { session } from './api'
+import { SHORTCUTS, resolveBindings, type ShortcutId, type ShortcutOverrides } from './shortcuts'
 
 const CACHE_KEY = 'cloudnote.cache'
 const UI_KEY = 'cloudnote.ui'
@@ -18,6 +19,19 @@ interface CacheShape {
  */
 export type ThemeMode = 'system' | 'light' | 'dark'
 
+/**
+ * 编辑器排版。行距是 line-height 的倍数，段间距是段落之间空多少个 em。
+ * 默认值就是原来实际生效的那两个数（段间距原来被浏览器默认的 1em 外边距顶着，实际就是 1em），
+ * 没调过的用户看不出差别。
+ */
+export const TYPOGRAPHY = {
+  lineHeight: { min: 1, max: 3, step: 0.1, default: 1.8 },
+  paragraphSpacing: { min: 0, max: 2, step: 0.1, default: 1 },
+} as const
+
+const clamp = (v: number, r: { min: number; max: number; default: number }) =>
+  Number.isFinite(v) ? Math.min(r.max, Math.max(r.min, v)) : r.default
+
 interface UiShape {
   leftOpen: boolean
   rightOpen: boolean
@@ -26,6 +40,10 @@ interface UiShape {
   leftWidth: number
   rightWidth: number
   themeMode: ThemeMode
+  lineHeight: number
+  paragraphSpacing: number
+  /** 只存用户改过的那几条快捷键，没改的走 shortcuts.ts 里的默认 */
+  shortcuts: ShortcutOverrides
 }
 
 /** 系统当前是不是深色。网页端和桌面端都能用，桌面端启动后会被主进程的结果覆盖 */
@@ -54,10 +72,25 @@ const readUi = (): UiShape => {
     leftWidth: 248,
     rightWidth: 232,
     themeMode: 'system',
+    lineHeight: TYPOGRAPHY.lineHeight.default,
+    paragraphSpacing: TYPOGRAPHY.paragraphSpacing.default,
+    shortcuts: {},
   }
   try {
     const raw = localStorage.getItem(UI_KEY)
-    return raw ? { ...fallback, ...(JSON.parse(raw) as Partial<UiShape>) } : fallback
+    if (!raw) return fallback
+    const ui = { ...fallback, ...(JSON.parse(raw) as Partial<UiShape>) }
+    // 存的东西可能被手改过或者来自以后放宽了范围的版本，读回来时按现在的范围夹一下
+    ui.lineHeight = clamp(ui.lineHeight, TYPOGRAPHY.lineHeight)
+    ui.paragraphSpacing = clamp(ui.paragraphSpacing, TYPOGRAPHY.paragraphSpacing)
+    // 快捷键只认现在还存在的 id，值必须是字符串；以后删掉某条快捷键，旧存档不会留下垃圾
+    const shortcuts: ShortcutOverrides = {}
+    for (const def of SHORTCUTS) {
+      const v = (ui.shortcuts as Record<string, unknown> | undefined)?.[def.id]
+      if (typeof v === 'string' && v && v !== def.default) shortcuts[def.id] = v
+    }
+    ui.shortcuts = shortcuts
+    return ui
   } catch {
     return fallback
   }
@@ -110,6 +143,12 @@ interface State extends CacheShape, UiShape {
   setTheme(theme: 'light' | 'dark'): void
   /** 用户在设置里改外观：记住选择，并立刻按新选择推一个生效值出去 */
   setThemeMode(mode: ThemeMode): void
+  /** 编辑器行距 / 段间距，越界值会被夹回范围内 */
+  setLineHeight(v: number): void
+  setParagraphSpacing(v: number): void
+  /** 改绑一条快捷键；传 null 恢复默认。撞车检查在调用方做，这里只管记 */
+  setShortcut(id: ShortcutId, combo: string | null): void
+  resetShortcuts(): void
   /** 弹出输入框，返回用户输入；取消返回 null，点额外按钮返回空串 */
   prompt(opts: Omit<PromptRequest, 'resolve'>): Promise<string | null>
   closeDialog(value: string | null): void
@@ -140,10 +179,16 @@ export const useStore = create<State>((set, get) => {
   }
 
   const writeUi = () => {
-    const { leftOpen, rightOpen, expanded, activeNoteId, leftWidth, rightWidth, themeMode } = get()
+    const {
+      leftOpen, rightOpen, expanded, activeNoteId, leftWidth, rightWidth,
+      themeMode, lineHeight, paragraphSpacing, shortcuts,
+    } = get()
     localStorage.setItem(
       UI_KEY,
-      JSON.stringify({ leftOpen, rightOpen, expanded, activeNoteId, leftWidth, rightWidth, themeMode })
+      JSON.stringify({
+        leftOpen, rightOpen, expanded, activeNoteId, leftWidth, rightWidth,
+        themeMode, lineHeight, paragraphSpacing, shortcuts,
+      })
     )
   }
 
@@ -280,6 +325,29 @@ export const useStore = create<State>((set, get) => {
       writeUi()
     },
 
+    // 滑块拖起来是连着触发的，走防抖那条
+    setLineHeight: (v) => {
+      set({ lineHeight: clamp(v, TYPOGRAPHY.lineHeight) })
+      persistUi()
+    },
+    setParagraphSpacing: (v) => {
+      set({ paragraphSpacing: clamp(v, TYPOGRAPHY.paragraphSpacing) })
+      persistUi()
+    },
+
+    setShortcut: (id, combo) => {
+      const next = { ...get().shortcuts }
+      const def = SHORTCUTS.find((s) => s.id === id)
+      if (!combo || combo === def?.default) delete next[id]
+      else next[id] = combo
+      set({ shortcuts: next })
+      writeUi()
+    },
+    resetShortcuts: () => {
+      set({ shortcuts: {} })
+      writeUi()
+    },
+
     showToast: (t) => set({ toast: { ...t, id: Date.now() } }),
     hideToast: () => set({ toast: null }),
 
@@ -354,4 +422,11 @@ export function buildTree(
     .sort(byOrder)
 
   return { tree: roots, rootNotes }
+}
+
+/** 当前生效的完整快捷键表（默认叠上改过的）。给 keydown 分发和 tooltip 用 */
+export const currentBindings = () => resolveBindings(useStore.getState().shortcuts)
+export const useBindings = () => {
+  const overrides = useStore((s) => s.shortcuts)
+  return resolveBindings(overrides)
 }

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { EditorContent, useEditor, type Editor } from '@tiptap/react'
 import StarterKit from '@tiptap/starter-kit'
+import Heading from '@tiptap/extension-heading'
 import { Placeholder } from '@tiptap/extensions'
 import { TaskItem, TaskList } from '@tiptap/extension-list'
 import { TableKit } from '@tiptap/extension-table'
@@ -23,7 +24,9 @@ import langXml from 'highlight.js/lib/languages/xml'
 import langCss from 'highlight.js/lib/languages/css'
 import langMd from 'highlight.js/lib/languages/markdown'
 
-import { useStore } from '@/lib/store'
+import { useStore, currentBindings } from '@/lib/store'
+import { comboFromEvent, findShortcut } from '@/lib/shortcuts'
+import { setLink } from '@/lib/links'
 import type { Note } from '@/lib/types'
 import * as sync from '@/lib/sync'
 import { deriveExcerpt, deriveTitle } from '@/lib/outline'
@@ -42,6 +45,18 @@ import { IconClose, IconNote, IconHistory, IconExport } from './Icons'
 const SAFE_LINK = /^(https?|mailto|ftp):/i
 
 // 只注册常用语言：全量 common 会给包体积额外加上近 1MB
+/**
+ * 标题快捷键换成 Alt+1 ~ 3。Tiptap 自带的是 Ctrl+Alt+数字，三个键太别扭；
+ * 而且 Ctrl+Alt 在欧洲布局上等于 AltGr，会和输入特殊字符撞车。四级标题保留在结构里，只是没有键。
+ */
+const HeadingWithAltKeys = Heading.extend({
+  addKeyboardShortcuts() {
+    return Object.fromEntries(
+      ([1, 2, 3] as const).map((level) => [`Alt-${level}`, () => this.editor.commands.toggleHeading({ level })])
+    )
+  },
+})
+
 const lowlight = createLowlight()
 lowlight.register({
   javascript: langJs, typescript: langTs, python: langPy, java: langJava,
@@ -123,9 +138,10 @@ export function EditorPane({ onEditorReady, scrollRef }: Props) {
     () => [
       StarterKit.configure({
         codeBlock: false,
-        heading: { levels: [1, 2, 3, 4] },
+        heading: false,
         link: { openOnClick: false, autolink: true, HTMLAttributes: { rel: 'noopener', target: '_blank' } },
       }),
+      HeadingWithAltKeys.configure({ levels: [1, 2, 3, 4] }),
       Placeholder.configure({
         placeholder: ({ node }) =>
           node.type.name === 'heading' ? '小节标题' : "从这里开始写。输入 '## ' 分小节，'- ' 变列表",
@@ -381,19 +397,23 @@ export function EditorPane({ onEditorReady, scrollRef }: Props) {
     }
   }, [editor, activeNoteId, note])
 
-  /* Ctrl+S 保存、Ctrl+F 查找、Ctrl+H 替换 */
+  /* 保存、查找、替换（默认 Ctrl+S / Ctrl+F / Ctrl+H，设置里可改，绑定表每次现取） */
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (!(e.ctrlKey || e.metaKey)) return
-      const key = e.key.toLowerCase()
-      if (key === 's') {
+      const id = findShortcut(currentBindings(), comboFromEvent(e))
+      if (id === 'save') {
         e.preventDefault()
         // 主动保存：顺手把还没有标题的笔记结算掉，这是取标题最明确的时机
         const ed = editorRef.current
         const id = useStore.getState().activeNoteId
         if (ed && id) settleTitle(ed, id)
         void sync.flushAll().then(() => useStore.getState().showToast({ message: '已保存' }))
-      } else if (key === 'f' || key === 'h') {
+      } else if (id === 'link') {
+        // 工具栏按钮的 tooltip 一直写着 Ctrl+K，之前其实没接上
+        e.preventDefault()
+        const ed = editorRef.current
+        if (ed && useStore.getState().activeNoteId) void setLink(ed)
+      } else if (id === 'find' || id === 'replace') {
         e.preventDefault()
         // 有选中文字就直接拿来当查找词，省一次输入
         const ed = editorRef.current

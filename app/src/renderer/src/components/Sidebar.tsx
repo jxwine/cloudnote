@@ -1,5 +1,6 @@
 import { useCallback, useMemo, useRef, useState } from 'react'
-import { useStore, buildTree, type TreeNode } from '@/lib/store'
+import { useStore, useBindings, buildTree, type TreeNode } from '@/lib/store'
+import { formatCombo } from '@/lib/shortcuts'
 import * as sync from '@/lib/sync'
 import { exportAll, exportNote } from '@/lib/export'
 import type { Note } from '@/lib/types'
@@ -21,6 +22,7 @@ const DND_MIME = 'application/x-cloudnote'
 const HOVER_EXPAND_MS = 700
 
 export function Sidebar() {
+  const bindings = useBindings()
   const folders = useStore((s) => s.folders)
   const notes = useStore((s) => s.notes)
   const search = useStore((s) => s.search)
@@ -264,7 +266,7 @@ export function Sidebar() {
             <button className="icon-btn" title="新建目录" onClick={() => void sync.createFolder('新建目录')}>
               <IconFolderPlus size={18} />
             </button>
-            <button className="icon-btn" title="新建笔记 (Ctrl+N)" onClick={() => void sync.createNote(null)}>
+            <button className="icon-btn" title={`新建笔记 (${formatCombo(bindings.newNote)})`} onClick={() => void sync.createNote(null)}>
               <IconPlus size={18} />
             </button>
           </>
