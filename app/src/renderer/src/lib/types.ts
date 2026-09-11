@@ -131,6 +131,9 @@ declare global {
         themeMode: 'light' | 'dark' | 'system'
       }>
       setTheme(mode: 'light' | 'dark' | 'system'): Promise<'light' | 'dark'>
+      /** 开机自启，以系统登录项为准；set 返回写完后的真实状态 */
+      getAutoLaunch(): Promise<boolean>
+      setAutoLaunch(on: boolean): Promise<boolean>
       exportFile(name: string, content: string): Promise<{ ok: boolean; path?: string }>
       exportFolder(
         files: { path: string; content: string }[]

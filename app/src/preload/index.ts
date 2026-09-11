@@ -11,6 +11,9 @@ const api = {
   }>,
   setTheme: (mode: 'light' | 'dark' | 'system') =>
     ipcRenderer.invoke('theme:set', mode) as Promise<'light' | 'dark'>,
+  /** 开机自启：读写的都是系统登录项本身，没有另存的副本 */
+  getAutoLaunch: () => ipcRenderer.invoke('autolaunch:get') as Promise<boolean>,
+  setAutoLaunch: (on: boolean) => ipcRenderer.invoke('autolaunch:set', on) as Promise<boolean>,
   exportFile: (name: string, content: string) =>
     ipcRenderer.invoke('export:file', name, content) as Promise<{ ok: boolean; path?: string }>,
   exportFolder: (files: { path: string; content: string }[]) =>

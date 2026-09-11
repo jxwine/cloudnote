@@ -67,6 +67,32 @@ function writeThemeMode(mode: ThemeMode): void {
   }
 }
 
+/**
+ * 开机自启。
+ *
+ * 真正的开关记在系统里（Windows 是 HKCU\...\Run 那个键），不另存一份：用户在
+ * 任务管理器「启动」页把它禁掉了，设置里就该如实显示成关着的，两份状态只会打架。
+ *
+ * dev 下 process.execPath 是 node_modules 里的 electron.exe，真写进注册表就会把
+ * 开发用的 Electron 注册成开机项，所以只在内存里记一下，让界面能正常联调。
+ */
+let devAutoLaunch = false
+
+function getAutoLaunch(): boolean {
+  if (isDev) return devAutoLaunch
+  return app.getLoginItemSettings().openAtLogin
+}
+
+function setAutoLaunch(on: boolean): boolean {
+  if (isDev) {
+    devAutoLaunch = on
+    return on
+  }
+  app.setLoginItemSettings({ openAtLogin: on })
+  // 回读而不是直接返回 on：写注册表可能被策略或安全软件拦下来，界面要显示真实状态
+  return app.getLoginItemSettings().openAtLogin
+}
+
 function createWindow(): void {
   const dark = nativeTheme.shouldUseDarkColors
 
@@ -333,6 +359,9 @@ app.whenReady().then(() => {
     // 给系统一点时间把安装程序拉起来，立刻退出的话有概率还没启动就没了父进程
     setTimeout(() => app.quit(), 800)
   })
+
+  ipcMain.handle('autolaunch:get', () => getAutoLaunch())
+  ipcMain.handle('autolaunch:set', (_e, on: boolean) => setAutoLaunch(on))
 
   ipcMain.handle('theme:set', (_e, mode: ThemeMode) => {
     nativeTheme.themeSource = mode

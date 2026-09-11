@@ -7,12 +7,14 @@ import { downloadClient } from '@/lib/update'
 import { PasswordDialog } from './PasswordDialog'
 import { IconClose } from './Icons'
 
-type Section = 'appearance' | 'account' | 'about'
+type Section = 'general' | 'appearance' | 'account' | 'about'
 
 /* 分类和设置项都由数组/JSX 段落驱动，以后加一类就是加一条，不用动布局 */
 const SECTIONS: { key: Section; label: string }[] = [
   { key: 'appearance', label: '外观' },
   { key: 'account', label: '账号' },
+  // 「通用」里目前只有开机自启这种桌面端才有的东西，网页版没有内容就不列出来
+  ...(isDesktop ? [{ key: 'general' as const, label: '通用' }] : []),
   { key: 'about', label: '关于' },
 ]
 
@@ -38,15 +40,28 @@ export function SettingsDialog({ onClose, onCheckUpdate }: Props) {
   const [section, setSection] = useState<Section>('appearance')
   const [changePassword, setChangePassword] = useState(false)
   const [version, setVersion] = useState('')
+  /** null = 还没从系统读回来，这段时间开关先禁用，免得点一下又被回读值盖掉 */
+  const [autoLaunch, setAutoLaunch] = useState<boolean | null>(null)
 
   const themeMode = useStore((s) => s.themeMode)
   const setThemeMode = useStore((s) => s.setThemeMode)
   const user = useStore((s) => s.user)
   const reset = useStore((s) => s.reset)
+  const showToast = useStore((s) => s.showToast)
 
   useEffect(() => {
     void desktop?.info().then((info) => setVersion(info.version))
+    void desktop?.getAutoLaunch().then(setAutoLaunch)
   }, [])
+
+  /** 开关显示的是写完后系统里的真实状态，写失败时它会弹回去，再补一句提示 */
+  const toggleAutoLaunch = async () => {
+    if (!desktop || autoLaunch === null) return
+    const want = !autoLaunch
+    const actual = await desktop.setAutoLaunch(want)
+    setAutoLaunch(actual)
+    if (actual !== want) showToast({ message: '没能修改开机自启设置，可能被系统策略或安全软件拦下了' })
+  }
 
   useEffect(() => {
     // 改密码弹窗开着时把 Esc 让给它，否则一下关掉两层
@@ -93,6 +108,21 @@ export function SettingsDialog({ onClose, onCheckUpdate }: Props) {
             </nav>
 
             <div className="settings-panel">
+              {section === 'general' && (
+                <Row title="开机自启" hint="开机后自动打开云笔记，登录 Windows 就能接着写">
+                  <button
+                    role="switch"
+                    aria-checked={autoLaunch === true}
+                    aria-label="开机自启"
+                    className={'switch' + (autoLaunch ? ' is-on' : '')}
+                    disabled={autoLaunch === null}
+                    onClick={() => void toggleAutoLaunch()}
+                  >
+                    <span className="switch-knob" />
+                  </button>
+                </Row>
+              )}
+
               {section === 'appearance' && (
                 <Row title="主题" hint="选定后一直记着，下次打开还是这个">
                   <div className="segmented" role="radiogroup" aria-label="主题">

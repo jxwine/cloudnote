@@ -3105,6 +3105,50 @@ body.is-reflowing .bubble-bar {
   box-shadow: 0 1px 2px rgba(24, 26, 30, 0.08);
 }
 
+/* 开关。只做开/关两态，尺寸和分段控件一行高，放在同一列里不跳 */
+.switch {
+  position: relative;
+  flex: 0 0 auto;
+  width: 38px;
+  height: 22px;
+  border-radius: 11px;
+  background: var(--line);
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  transition: background 0.16s;
+}
+
+.switch:hover {
+  background: var(--text-3);
+}
+
+.switch.is-on,
+.switch.is-on:hover {
+  background: var(--accent);
+}
+
+.switch:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.switch-knob {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(24, 26, 30, 0.2);
+  transition: transform 0.16s;
+}
+
+.switch.is-on .switch-knob {
+  transform: translateX(16px);
+}
+
 @media (max-width: 620px) {
   .settings-body {
     flex-direction: column;
