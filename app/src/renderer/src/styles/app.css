@@ -3136,6 +3136,23 @@ body.is-reflowing .bubble-bar {
   box-shadow: 0 1px 2px rgba(24, 26, 30, 0.08);
 }
 
+/* 关于页版本号旁边的红点：有新版本时才出现，是这个应用里唯一一处用红色催人的地方 */
+.update-dot {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: 10px;
+  color: var(--danger);
+}
+
+.update-dot i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--danger);
+  box-shadow: 0 0 0 2px var(--danger-soft);
+}
+
 /* 滑块行：原生 range 上一层主题色就够了，右边固定宽度放数值，拖的时候不抖 */
 .slider {
   display: flex;

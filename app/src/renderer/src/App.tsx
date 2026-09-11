@@ -123,7 +123,10 @@ function Workspace() {
   const [editor, setEditor] = useState<Editor | null>(null)
   const [quickJump, setQuickJump] = useState(false)
   const [settings, setSettings] = useState(false)
+  /** 正在弹的更新框；关掉就没了 */
   const [update, setUpdate] = useState<UpdateInfo | null>(null)
+  /** 查到过的新版本，关掉弹窗也记着——设置里的版本号旁边靠它显示红点 */
+  const [available, setAvailable] = useState<UpdateInfo | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
 
   const onEditorReady = useCallback((e: Editor | null) => setEditor(e), [])
@@ -176,7 +179,9 @@ function Workspace() {
     let alive = true
     const run = () =>
       void checkUpdate().then((info) => {
-        if (alive && info) setUpdate(info)
+        if (!alive) return
+        setAvailable(info)
+        if (info) setUpdate(info)
       })
     const first = setTimeout(run, 8_000)
     const timer = setInterval(run, 6 * 60 * 60 * 1000)
@@ -190,6 +195,7 @@ function Workspace() {
   /** 设置里手动点的那次：查不到也要给个回应，不然像是没反应 */
   const manualCheck = async () => {
     const info = await checkUpdate()
+    setAvailable(info)
     if (info) setUpdate(info)
     else showToast({ message: '已经是最新版本' })
   }
@@ -285,7 +291,11 @@ function Workspace() {
       <PromptDialog />
       {quickJump && <QuickJump onClose={() => setQuickJump(false)} />}
       {settings && (
-        <SettingsDialog onClose={() => setSettings(false)} onCheckUpdate={() => void manualCheck()} />
+        <SettingsDialog
+          onClose={() => setSettings(false)}
+          onCheckUpdate={() => void manualCheck()}
+          newVersion={available?.version ?? null}
+        />
       )}
       {update && <UpdateDialog info={update} onClose={() => setUpdate(null)} />}
       {/* 凭证失效的提示压在最上面：这时候任何编辑都传不上去，得先把话说清楚 */}

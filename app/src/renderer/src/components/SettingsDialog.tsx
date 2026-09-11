@@ -37,6 +37,8 @@ interface Props {
   onClose: () => void
   /** 检查更新的结果要弹 UpdateDialog，那个状态在 Workspace 手里，这里只负责触发 */
   onCheckUpdate: () => void
+  /** 已经查到的新版本号；有的话版本号旁边亮个红点，关掉过更新弹窗的人也能看见 */
+  newVersion: string | null
 }
 
 /**
@@ -45,7 +47,7 @@ interface Props {
  * 用应用内的面板而不是另开一个窗口：桌面端和网页版是同一份构建，
  * 另开窗口的话网页版还得再写一套。
  */
-export function SettingsDialog({ onClose, onCheckUpdate }: Props) {
+export function SettingsDialog({ onClose, onCheckUpdate, newVersion }: Props) {
   const [section, setSection] = useState<Section>('appearance')
   const [changePassword, setChangePassword] = useState(false)
   const [version, setVersion] = useState('')
@@ -280,7 +282,24 @@ export function SettingsDialog({ onClose, onCheckUpdate }: Props) {
               )}
 
               {section === 'about' && (
-                <Row title="云笔记" hint={isDesktop ? `当前版本 ${version || '读取中…'}` : '网页版'}>
+                <Row
+                  title="云笔记"
+                  hint={
+                    isDesktop ? (
+                      <>
+                        当前版本 {version || '读取中…'}
+                        {newVersion && (
+                          <span className="update-dot" title={`有新版本 ${newVersion}`}>
+                            <i />
+                            可更新到 {newVersion}
+                          </span>
+                        )}
+                      </>
+                    ) : (
+                      '网页版'
+                    )
+                  }
+                >
                   {isDesktop ? (
                     <button className="btn-ghost" onClick={onCheckUpdate}>
                       检查更新
@@ -345,7 +364,7 @@ function Row({
   children,
 }: {
   title: string
-  hint?: string
+  hint?: React.ReactNode
   children: React.ReactNode
 }) {
   return (
