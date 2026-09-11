@@ -28,19 +28,41 @@ export function compareVersion(a: string, b: string): number {
 export interface UpdateInfo extends Release {
   /** 拼好的绝对下载地址，主进程直接拿去 fetch */
   downloadUrl: string
+  /** hot：2 MB 的热更新包，下完重启即可；exe：完整安装包，要跑安装程序 */
+  kind: 'hot' | 'exe'
 }
+
+/** 服务端上热更新包走的「平台」通道，和整包的 win32 分开存 */
+export const HOT_PLATFORM = 'win32-asar'
+
+const isRelease = (r: Release | Record<string, never>): r is Release => 'version' in r && !!r.version
 
 /**
  * 查有没有新版本。没有、查不到、或者根本不在桌面端，都返回 null——
  * 这个功能失败了不该打扰用户，静默略过就行。
+ *
+ * 两条通道都看：热更新包和整包各取最新一条，都比当前新的话优先热更新
+ * （版本不低于整包、且没有因为 Electron 不匹配被拒过）。整包只在热更新给不了时才提示。
  */
 export async function checkUpdate(): Promise<UpdateInfo | null> {
   if (!isDesktop || !desktop) return null
   try {
-    const [{ version: current }, latest] = await Promise.all([desktop.info(), api.latestRelease()])
-    if (!('version' in latest) || !latest.version) return null
-    if (compareVersion(latest.version, current) <= 0) return null
-    return { ...(latest as Release), downloadUrl: fileUrl(latest.url) }
+    const [info, hot, exe] = await Promise.all([
+      desktop.info(),
+      api.latestRelease(HOT_PLATFORM).catch(() => ({}) as Record<string, never>),
+      api.latestRelease(),
+    ])
+    const current = info.version
+    const newer = (r: Release | Record<string, never>): Release | null =>
+      isRelease(r) && compareVersion(r.version, current) > 0 ? r : null
+
+    const hotRel = newer(hot)
+    const exeRel = newer(exe)
+    const hotOk =
+      hotRel && !info.rejectedHot.includes(hotRel.version) && (!exeRel || compareVersion(hotRel.version, exeRel.version) >= 0)
+    if (hotOk && hotRel) return { ...hotRel, downloadUrl: fileUrl(hotRel.url), kind: 'hot' }
+    if (exeRel) return { ...exeRel, downloadUrl: fileUrl(exeRel.url), kind: 'exe' }
+    return null
   } catch {
     return null
   }
@@ -50,8 +72,8 @@ export async function checkUpdate(): Promise<UpdateInfo | null> {
 export async function fetchLatestRelease(): Promise<UpdateInfo | null> {
   try {
     const latest = await api.latestRelease()
-    if (!('version' in latest) || !latest.version) return null
-    return { ...(latest as Release), downloadUrl: fileUrl(latest.url) }
+    if (!isRelease(latest)) return null
+    return { ...latest, downloadUrl: fileUrl(latest.url), kind: 'exe' }
   } catch {
     return null
   }

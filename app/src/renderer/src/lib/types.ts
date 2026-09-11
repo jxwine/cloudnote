@@ -129,6 +129,10 @@ declare global {
         theme: 'light' | 'dark'
         /** 主进程记住的外观选择，桌面端以它为准 */
         themeMode: 'light' | 'dark' | 'system'
+        /** 是不是从热更新包启动的 */
+        hot: boolean
+        /** 下载后发现 Electron 版本对不上的热更新版本，检查更新时跳过 */
+        rejectedHot: string[]
       }>
       setTheme(mode: 'light' | 'dark' | 'system'): Promise<'light' | 'dark'>
       /** 开机自启，以系统登录项为准；set 返回写完后的真实状态 */
@@ -142,6 +146,8 @@ declare global {
       onThemeChange(cb: (theme: 'light' | 'dark') => void): () => void
       downloadUpdate(url: string, sha256: string): Promise<string>
       installUpdate(path: string): Promise<void>
+      downloadHotUpdate(url: string, sha256: string, version: string): Promise<string>
+      applyHotUpdate(): Promise<void>
       onUpdateProgress(cb: (p: { received: number; total: number }) => void): () => void
     }
   }

@@ -266,9 +266,41 @@ then launches the installer and quits (NSIS needs the running app gone to overwr
 A checksum mismatch deletes the file and asks you to retry — an unverified exe is never handed
 to the user to double-click.
 
+### Hot updates (2 MB instead of 84 MB)
+
+Only 2 MB of the installer is our own code (`resources/app.asar`); the rest is the Electron runtime.
+So a normal release ships a hot-update package instead of a full installer: `npm run dist` builds the
+exe and also packs `out/ + build/ + package.json` into `release/云笔记 热更新 <version>.asar`, which you
+upload in the admin panel (it lives in its own channel next to the exe).
+
+On the client, `package.json`'s `main` points at `out/main/loader.js`. On startup it looks in
+`userData/updates/` for a package newer than the bundled one whose declared Electron major matches the
+runtime, and `require`s the main process from there (preload, renderer and tray icon follow); otherwise
+it uses the bundled one. The update check prefers the hot channel and only offers the full installer
+when a hot update can't help (Electron major bump, or the user runs an old build without the loader).
+
+Constraints, all found on a real machine:
+
+- On Windows a running asar **can be overwritten but not deleted**. Downloads therefore always go to a
+  fresh name (`<version>.download` → verified → renamed `<version>.asar`), never in place; old packages
+  are cleaned on the next start.
+- Reading a package's `package.json` must bypass Electron's asar hooks — they cache the handle until
+  exit (so the file can never be deleted) and treat `x.asar` itself as a directory. `src/main/asar.ts`
+  is a 40-line raw reader that flips `process.noAsar` while it works.
+- Crash guard: the loader writes `updates/booting.json` before loading; the main process removes it
+  after the first frame. If it's still there on the next start, that package is renamed `.bad`, its
+  version is added to a reject list, and the bundled build takes over. A package that throws while its
+  main module loads takes the same route via one relaunch (loading the bundled build in the same
+  process would register a second window and tray).
+- `cloudnote.electron` in the package declares which Electron it was built against; a mismatch is
+  discarded right after download and remembered, so it isn't re-downloaded every 6 hours.
+- The version comes from the package's own `package.json`, not `app.getVersion()` — the latter is
+  always the installer's.
+
 `electron-updater` is deliberately not used: it wants `latest.yml` and blockmaps laid out its way
-on the server, and an unsigned app has to disable signature verification on top of that. Not worth
-another dependency here. The cost is no delta downloads and no silent install.
+on the server, and an unsigned app has to disable signature verification on top of that. Its delta
+download is a block-level diff of the NSIS installer, which in practice saves far less than swapping
+the asar.
 
 The web version has none of this; instead the login page and the title bar offer
 "下载 Windows 客户端" (Download the Windows client).

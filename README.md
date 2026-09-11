@@ -239,8 +239,34 @@ note/
 下载，带进度条；下完先校验 sha256，对不上就删掉文件并提示重试，绝不会把一个来路不明的
 exe 递给你双击。校验通过才拉起安装程序并退出自己（NSIS 装的时候要求覆盖正在运行的程序）。
 
+### 热更新（2 MB 而不是 84 MB）
+
+安装包里我们自己的代码只有 2 MB（`resources/app.asar`），其余全是 Electron 运行时。
+所以日常发版不发整包，发一个热更新包：`npm run dist` 会在打出 exe 的同时把 `out/ + build/ + package.json`
+打成 `release/云笔记 热更新 <version>.asar`，在后台上传它（和 exe 走两条独立通道）。
+
+客户端这边，`package.json` 的 `main` 指向 `out/main/loader.js`：启动时看 `userData/updates/` 里有没有
+比自带版本新、Electron 主版本对得上的包，有就从那份 `require` 主进程（preload、渲染层、托盘图标
+都跟着那份走），没有就用安装包里的。检查更新时优先热更新，只有热更新给不了
+（Electron 大版本变了、或者用户装的是没有 loader 的老版本）才提示下载整包。
+
+几条约束，都是真机踩出来的：
+
+- Windows 上正在运行的 asar **删不掉但能被覆盖写**。所以下载永远写新文件名
+  （`<version>.download` → 校验通过改名 `<version>.asar`），绝不原地覆盖，旧包留到下次启动再清。
+- 看一个包的 `package.json` 不能走 Electron 的 asar 钩子——那套会把句柄缓存到进程退出，
+  文件就删不掉了；而且钩子把 `x.asar` 本身当目录，直接 `open` 会失败。`src/main/asar.ts`
+  是一个 40 行的裸读取器，读之前把 `process.noAsar` 打开。
+- 崩溃保护：loader 加载前写 `updates/booting.json`，主进程出首帧后删掉；下次启动发现还在，
+  就把那个包改名 `.bad` 并记进拒绝名单，回退到自带版本。主模块加载时就抛异常的包也走这条路
+  （relaunch 一次，不在同一个进程里再加载自带的，否则会叠出两份窗口）。
+- 包里 `cloudnote.electron` 声明它是对着哪个 Electron 构建的，和运行时主版本不符的包
+  下载完就丢掉并记住版本，不会每 6 小时白下一次。
+- 版本号从自己头顶的 `package.json` 读，不用 `app.getVersion()`——后者永远是安装包那份的。
+
 没接 `electron-updater`：它要求服务端按它的格式放 `latest.yml` 和 blockmap，未签名的应用
-还得关掉签名校验，为这点收益多一个依赖不划算。代价是不支持差分下载和静默安装。
+还得关掉签名校验，为这点收益多一个依赖不划算；而且它的差分下载是对 NSIS 包做块级 diff，
+实测远不如直接换 asar。
 
 网页版没有这一套，取而代之的是登录页和顶栏的「下载 Windows 客户端」。
 

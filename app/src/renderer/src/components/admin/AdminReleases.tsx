@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, uploadRelease } from '@/lib/api'
 import { useStore } from '@/lib/store'
-import { formatBytes } from '@/lib/update'
+import { formatBytes, HOT_PLATFORM } from '@/lib/update'
 import type { Release } from '@/lib/types'
 import { IconUpload } from '../Icons'
 
@@ -79,8 +79,11 @@ export function AdminReleases() {
               <tr key={r.id} className={r.published ? '' : 'is-disabled'}>
                 <td>
                   <div className="admin-user">
-                    <span className="admin-user-name">{r.version}</span>
-                    <span className="admin-user-mail">{r.platform}</span>
+                    <span className="admin-user-name">
+                      {r.version}
+                      {r.platform === HOT_PLATFORM && <span className="admin-tag is-hot">热更新</span>}
+                    </span>
+                    <span className="admin-user-mail">{r.platform === HOT_PLATFORM ? '仅换代码，重启生效' : r.platform}</span>
                   </div>
                 </td>
                 <td className="admin-file">
@@ -122,6 +125,10 @@ export function AdminReleases() {
           客户端拿<b>最近发布</b>的那条已发布版本和自己比——按发布时间排，不是按版本号大小，
           所以想回滚只要把旧版本重新传一次。客户端只会往高版本更新，不会被降级。
           同一个版本号只能存在一条，要重发得先删掉旧的那条。
+          <br />
+          热更新包（.asar，约 2 MB）和安装包（.exe）是两条独立的通道，各自取最新一条；
+          客户端优先走热更新，只有热更新给不了（Electron 大版本变了、或者装的是没有热更新能力的老版本）
+          才提示下载安装包。平时发版两个都传：<code>npm run dist</code> 会一起打出来。
         </p>
       )}
     </div>
@@ -141,8 +148,8 @@ function UploadForm({ onDone }: { onDone: () => void }) {
   const [dragging, setDragging] = useState(false)
 
   const pick = (f: File | null) => {
-    if (f && !/\.exe$/i.test(f.name)) {
-      setError(`只能上传 .exe 安装包，这个是「${f.name}」`)
+    if (f && !/\.(exe|asar)$/i.test(f.name)) {
+      setError(`只能上传 .exe 安装包或 .asar 热更新包，这个是「${f.name}」`)
       return
     }
     setFile(f)
@@ -184,8 +191,10 @@ function UploadForm({ onDone }: { onDone: () => void }) {
     setError('')
     setSent(0)
     try {
-      const r = await uploadRelease(file, { version: version.trim(), notes }, (s) => setSent(s))
-      showToast({ message: `${r.version} 已发布，客户端下次检查更新就能看到` })
+      // 热更新包走自己的通道，和整包互不覆盖
+      const platform = /\.asar$/i.test(file.name) ? HOT_PLATFORM : 'win32'
+      const r = await uploadRelease(file, { version: version.trim(), notes, platform }, (s) => setSent(s))
+      showToast({ message: `${r.version}${platform === HOT_PLATFORM ? ' 热更新' : ''} 已发布，客户端下次检查更新就能看到` })
       setFile(null)
       setVersion('')
       setNotes('')
@@ -232,7 +241,7 @@ function UploadForm({ onDone }: { onDone: () => void }) {
           id="rel-file"
           ref={inputRef}
           type="file"
-          accept=".exe"
+          accept=".exe,.asar"
           hidden
           disabled={busy}
           onChange={(e) => pick(e.target.files?.[0] ?? null)}
@@ -245,8 +254,8 @@ function UploadForm({ onDone }: { onDone: () => void }) {
           </>
         ) : (
           <>
-            <b className="admin-drop-name">把安装包拖到这里</b>
-            <span className="admin-drop-hint">或者点一下选择文件 · 只收 .exe</span>
+            <b className="admin-drop-name">把安装包或热更新包拖到这里</b>
+            <span className="admin-drop-hint">或者点一下选择文件 · .exe 是整包，.asar 是热更新</span>
           </>
         )}
       </div>

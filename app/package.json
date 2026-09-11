@@ -1,22 +1,24 @@
 {
   "name": "cloudnote",
-  "version": "1.1.7",
+  "version": "1.1.8",
   "private": true,
   "description": "云笔记 — 简洁优雅的多端同步笔记",
   "author": "cloudnote",
-  "main": "./out/main/index.js",
+  "main": "./out/main/loader.js",
   "scripts": {
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "dist": "electron-vite build && electron-builder --win --x64",
+    "dist": "electron-vite build && electron-builder --win --x64 && node scripts/pack-hot.mjs",
+    "dist:hot": "electron-vite build && node scripts/pack-hot.mjs",
     "test:sync": "node --no-warnings test/sync.e2e.mjs"
   },
   "dependencies": {
     "zustand": "^5.0.2"
   },
   "devDependencies": {
+    "@electron/asar": "^3.2.7",
     "@tiptap/core": "^3.0.0",
     "@tiptap/extension-code-block-lowlight": "^3.0.0",
     "@tiptap/extension-heading": "^3.0.0",

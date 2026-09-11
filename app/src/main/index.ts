@@ -1,15 +1,27 @@
 import { app, shell, BrowserWindow, ipcMain, nativeTheme, dialog, Tray, Menu, net } from 'electron'
 import { join, dirname, basename } from 'node:path'
 import { fork, type ChildProcess } from 'node:child_process'
-import { existsSync, readFileSync, writeFileSync, mkdirSync, createWriteStream, rmSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync, mkdirSync, createWriteStream, rmSync, renameSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
+import { cleanupUpdates, clearBooting, compareVersion, inspectHotPackage, rememberRejected, runtimeMajor, updatesDir } from './hot'
+import { withoutAsar } from './asar'
 
 /** 由构建注入：打包时没指定远程服务器才需要自带一份后端 */
 declare const __USE_BUNDLED_SERVER__: boolean
 
 const isDev = !app.isPackaged
+
+/**
+ * 版本号读自己头顶的 package.json，不用 app.getVersion()。
+ * 后者永远是安装包里那份的版本；从热更新包启动时这个文件在 updates/x.asar 里，
+ * 版本号才是真正在跑的那个。用错了的话更新检查会一直提示同一个版本。
+ */
+const appVersion = (JSON.parse(readFileSync(join(__dirname, '../../package.json'), 'utf8')) as { version: string })
+  .version
+/** loader 把选中的热更新包路径放在这里；没有就是从自带版本起的 */
+const hotAsar = process.env.CLOUDNOTE_HOT_ASAR || null
 
 // 开发时可以挂调试端口，方便自动化驱动真实窗口：
 //   CLOUDNOTE_DEBUG_PORT=9444 npm run dev
@@ -47,24 +59,33 @@ type ThemeMode = 'system' | 'light' | 'dark'
  */
 const settingsFile = () => join(app.getPath('userData'), 'settings.json')
 
-function readThemeMode(): ThemeMode {
-  try {
-    const raw = JSON.parse(readFileSync(settingsFile(), 'utf8')) as { themeMode?: ThemeMode }
-    if (raw.themeMode === 'light' || raw.themeMode === 'dark' || raw.themeMode === 'system') {
-      return raw.themeMode
-    }
-  } catch {
-    /* 没有或者坏了都当默认，不值得为它报错 */
-  }
-  return 'system'
+interface Settings {
+  themeMode?: ThemeMode
+  /** 下载后发现 Electron 版本对不上的热更新版本，记下来免得每次检查更新都白下一遍 */
+  rejectedHot?: string[]
 }
 
-function writeThemeMode(mode: ThemeMode): void {
+function readSettings(): Settings {
   try {
-    writeFileSync(settingsFile(), JSON.stringify({ themeMode: mode }), 'utf8')
+    const raw = JSON.parse(readFileSync(settingsFile(), 'utf8')) as Settings
+    return raw && typeof raw === 'object' ? raw : {}
+  } catch {
+    /* 没有或者坏了都当默认，不值得为它报错 */
+    return {}
+  }
+}
+
+function writeSettings(patch: Settings): void {
+  try {
+    writeFileSync(settingsFile(), JSON.stringify({ ...readSettings(), ...patch }), 'utf8')
   } catch {
     /* 写不进去只影响下次启动的首帧，不该打断用户 */
   }
+}
+
+function readThemeMode(): ThemeMode {
+  const mode = readSettings().themeMode
+  return mode === 'light' || mode === 'dark' || mode === 'system' ? mode : 'system'
 }
 
 /**
@@ -113,7 +134,11 @@ function createWindow(): void {
     },
   })
 
-  mainWindow.on('ready-to-show', () => mainWindow?.show())
+  mainWindow.on('ready-to-show', () => {
+    mainWindow?.show()
+    // 能出首帧就算这份代码起来了，撤掉 loader 写的崩溃保护标记
+    if (hotAsar) clearBooting()
+  })
 
   // 点关闭不退出，收进托盘。真正退出走托盘菜单的「退出」，那条路会先把 quitting 置真。
   // 托盘没建起来时不拦——否则窗口关不掉，用户只能去任务管理器。
@@ -238,13 +263,18 @@ else app.on('second-instance', showWindow)
 app.whenReady().then(() => {
   if (!isPrimaryInstance) return
   if (!isDev && __USE_BUNDLED_SERVER__) startBundledServer()
+  // 只有拿到锁的实例才清理：第二个实例要是也清，会把这边正在下载的半截文件删掉
+  if (!isDev) cleanupUpdates(hotAsar)
 
   // 必须在 createWindow 之前：窗口一建出来就要按这个颜色画底和系统按钮
   nativeTheme.themeSource = readThemeMode()
 
   ipcMain.handle('app:info', () => ({
-    version: app.getVersion(),
+    version: appVersion,
     platform: process.platform,
+    /** 这份代码是不是从热更新包起的 */
+    hot: !!hotAsar,
+    rejectedHot: readSettings().rejectedHot ?? [],
     theme: nativeTheme.shouldUseDarkColors ? 'dark' : 'light',
     themeMode: nativeTheme.themeSource as ThemeMode,
   }))
@@ -295,15 +325,16 @@ app.whenReady().then(() => {
    * 边下边算 sha256，对不上就把文件删掉再报错——宁可让用户重来一次，
    * 也不能把一个来路不明的 exe 递给他去双击。
    */
-  ipcMain.handle('update:download', async (_e, url: string, sha256: string) => {
-    /*
-     * 必须用 Electron 的 net.fetch，不能用 Node 内置的 fetch。
-     *
-     * 后者走 undici，不认 Windows 的系统代理，也不读系统证书库。装了代理软件的机器上
-     * 它会直连一个被劫持的地址，报一句没头没脑的「fetch failed」——而渲染进程走的是
-     * Chromium 网络栈，同一个域名好好的，于是「版本信息拿得到、包下不下来」。
-     * net.fetch 用的就是 Chromium 那一套，和渲染进程行为一致。
-     */
+  /**
+   * 下载到指定路径，边下边算 sha256，对不上就删掉再报错。
+   *
+   * 必须用 Electron 的 net.fetch，不能用 Node 内置的 fetch。
+   * 后者走 undici，不认 Windows 的系统代理，也不读系统证书库。装了代理软件的机器上
+   * 它会直连一个被劫持的地址，报一句没头没脑的「fetch failed」——而渲染进程走的是
+   * Chromium 网络栈，同一个域名好好的，于是「版本信息拿得到、包下不下来」。
+   * net.fetch 用的就是 Chromium 那一套，和渲染进程行为一致。
+   */
+  async function downloadTo(url: string, sha256: string, file: string): Promise<void> {
     let res: Response
     try {
       res = await net.fetch(url)
@@ -313,14 +344,10 @@ app.whenReady().then(() => {
     if (!res.ok || !res.body) throw new Error(`下载失败（${res.status}）`)
 
     const total = Number(res.headers.get('content-length') || 0)
-    // URL 里的中文是百分号编码的，不解码的话临时文件名会是一串 %E4%BA%91，
-    // 用户在 UAC 提示里看到的就是那串乱码。顺手去掉路径分隔符，防止拼出目录。
-    const raw = decodeURIComponent(basename(new URL(url).pathname))
-    const name = raw.replace(/[\/:*?"<>|]/g, '_') || 'cloudnote-setup.exe'
-    const file = join(app.getPath('temp'), name)
     const hash = createHash('sha256')
     let received = 0
 
+    mkdirSync(dirname(file), { recursive: true })
     try {
       await pipeline(
         Readable.fromWeb(res.body as Parameters<typeof Readable.fromWeb>[0]),
@@ -341,9 +368,57 @@ app.whenReady().then(() => {
 
     if (hash.digest('hex') !== sha256) {
       rmSync(file, { force: true })
-      throw new Error('安装包校验失败，可能在传输中损坏了，请重试')
+      throw new Error('文件校验失败，可能在传输中损坏了，请重试')
     }
+  }
+
+  /** 整包：下到临时目录，返回路径交给 update:install 去执行 */
+  ipcMain.handle('update:download', async (_e, url: string, sha256: string) => {
+    // URL 里的中文是百分号编码的，不解码的话临时文件名会是一串 %E4%BA%91，
+    // 用户在 UAC 提示里看到的就是那串乱码。顺手去掉路径分隔符，防止拼出目录。
+    const raw = decodeURIComponent(basename(new URL(url).pathname))
+    const name = raw.replace(/[\/:*?"<>|]/g, '_') || 'cloudnote-setup.exe'
+    const file = join(app.getPath('temp'), name)
+    await downloadTo(url, sha256, file)
     return file
+  })
+
+  /**
+   * 热更新包：下到 updates/<version>.download，校验通过再改名成 .asar。
+   *
+   * 后缀这么绕是因为 Electron 看到路径里有 .asar 就当归档处理，半截文件会被当成坏归档；
+   * 而且正在运行的 asar 能被覆盖写，所以永远写新文件、绝不动正在用的那份。
+   * 改名之前用裸读取器看一眼 package.json：版本得和服务端说的一致，Electron 主版本得和
+   * 运行时对上——对不上的记进 settings，下次检查更新直接跳过，别每 6 小时白下一次。
+   */
+  ipcMain.handle('update:download-hot', async (_e, url: string, sha256: string, version: string) => {
+    if (!/^\d+\.\d+\.\d+$/.test(version)) throw new Error('版本号不合法')
+    const partial = join(updatesDir(), `${version}.download`)
+    const target = join(updatesDir(), `${version}.asar`)
+    await downloadTo(url, sha256, partial)
+
+    const pkg = inspectHotPackage(partial)
+    if (!pkg || compareVersion(pkg.version, version) !== 0) {
+      rmSync(partial, { force: true })
+      throw new Error('热更新包内容和服务端标的版本对不上，已丢弃')
+    }
+    if (pkg.electron !== runtimeMajor()) {
+      rmSync(partial, { force: true })
+      rememberRejected(version)
+      throw new Error(`这个热更新要求 Electron ${pkg.electron}，当前客户端是 ${runtimeMajor()}，需要下载完整安装包`)
+    }
+    withoutAsar(() => {
+      rmSync(target, { force: true })
+      renameSync(partial, target)
+    })
+    return target
+  })
+
+  /** 热更新下完了：重启，loader 会挑到新包。quitting 置真绕过托盘那条「关窗只隐藏」 */
+  ipcMain.handle('update:apply', () => {
+    quitting = true
+    app.relaunch()
+    app.quit()
   })
 
   /**
@@ -365,7 +440,7 @@ app.whenReady().then(() => {
 
   ipcMain.handle('theme:set', (_e, mode: ThemeMode) => {
     nativeTheme.themeSource = mode
-    writeThemeMode(mode)
+    writeSettings({ themeMode: mode })
     const isDark = nativeTheme.shouldUseDarkColors
     mainWindow?.setTitleBarOverlay?.(overlayFor(isDark))
     return isDark ? 'dark' : 'light'

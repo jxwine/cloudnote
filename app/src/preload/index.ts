@@ -8,6 +8,10 @@ const api = {
     theme: 'light' | 'dark'
     /** 主进程记住的外观选择，只用来对账；权威在渲染进程的 localStorage */
     themeMode: 'light' | 'dark' | 'system'
+    /** 是不是从热更新包启动的 */
+    hot: boolean
+    /** 下载后发现 Electron 版本对不上的热更新版本，检查更新时跳过 */
+    rejectedHot: string[]
   }>,
   setTheme: (mode: 'light' | 'dark' | 'system') =>
     ipcRenderer.invoke('theme:set', mode) as Promise<'light' | 'dark'>,
@@ -25,6 +29,11 @@ const api = {
     ipcRenderer.invoke('update:download', url, sha256) as Promise<string>,
   /** 拉起安装程序并退出应用 */
   installUpdate: (path: string) => ipcRenderer.invoke('update:install', path) as Promise<void>,
+  /** 下载热更新包到 updates/，校验通过返回路径；Electron 不匹配会抛错并记住这个版本 */
+  downloadHotUpdate: (url: string, sha256: string, version: string) =>
+    ipcRenderer.invoke('update:download-hot', url, sha256, version) as Promise<string>,
+  /** 重启以切换到刚下好的热更新包 */
+  applyHotUpdate: () => ipcRenderer.invoke('update:apply') as Promise<void>,
   onUpdateProgress: (cb: (p: { received: number; total: number }) => void) => {
     const handler = (_e: unknown, p: { received: number; total: number }) => cb(p)
     ipcRenderer.on('update:progress', handler)
