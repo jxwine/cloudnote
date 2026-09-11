@@ -597,7 +597,7 @@ textarea {
   outline: none;
   font-family: var(--font-doc);
   font-size: 15.5px;
-  line-height: var(--doc-line-height, 1.8);
+  line-height: var(--doc-line-height, 1.5);
   color: var(--text);
   word-wrap: break-word;
 }

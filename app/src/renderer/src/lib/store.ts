@@ -21,11 +21,11 @@ export type ThemeMode = 'system' | 'light' | 'dark'
 
 /**
  * 编辑器排版。行距是 line-height 的倍数，段间距是段落之间空多少个 em。
- * 默认值就是原来实际生效的那两个数（段间距原来被浏览器默认的 1em 外边距顶着，实际就是 1em），
- * 没调过的用户看不出差别。
+ * 段间距默认 1em 就是原来实际生效的值（被浏览器默认的 1em 外边距顶着）；
+ * 行距原来是 1.8，用户嫌松，改成 1.5。
  */
 export const TYPOGRAPHY = {
-  lineHeight: { min: 1, max: 3, step: 0.1, default: 1.8 },
+  lineHeight: { min: 1, max: 3, step: 0.1, default: 1.5 },
   paragraphSpacing: { min: 0, max: 2, step: 0.1, default: 1 },
 } as const
 
