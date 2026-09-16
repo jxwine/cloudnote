@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { EditorContent, useEditor, type Editor } from '@tiptap/react'
+import { EditorState } from '@tiptap/pm/state'
 import StarterKit from '@tiptap/starter-kit'
 import Heading from '@tiptap/extension-heading'
 import { Placeholder } from '@tiptap/extensions'
@@ -56,6 +57,36 @@ const HeadingWithAltKeys = Heading.extend({
     )
   },
 })
+
+/**
+ * 把一份内容整个换进编辑器，但不进撤销栈。
+ *
+ * 切换笔记和接收远端改动都不是用户的编辑动作，不该能被 Ctrl+Z 撤掉：
+ * 否则在 B 里按一下 Ctrl+Z 会把 A 的正文整个撤回来（真测出来过），
+ * 远端同步进来的改动也会被撤成本地的旧版本再保存上去，等于覆盖别人。
+ * 用 chain 是为了拿到同一个 transaction 去打 addToHistory 标记。
+ */
+function replaceContent(editor: Editor, html: string): void {
+  editor
+    .chain()
+    .setContent(html, { emitUpdate: false })
+    .command(({ tr }) => {
+      tr.setMeta('addToHistory', false)
+      return true
+    })
+    .run()
+}
+
+/**
+ * 清空撤销栈。prosemirror-history 没有公开的清空接口，
+ * 用同一份 doc 和插件重建 EditorState，所有插件状态从头初始化，历史自然是空的。
+ * 切换笔记、收到远端整篇替换时调用：一篇笔记的撤销记录不该带到另一篇里去，
+ * 也不该在别人的版本上撤自己早先的步骤。
+ */
+function resetHistory(editor: Editor): void {
+  const { doc, plugins, selection } = editor.state
+  editor.view.updateState(EditorState.create({ doc, plugins, selection }))
+}
 
 const lowlight = createLowlight()
 lowlight.register({
@@ -296,7 +327,8 @@ export function EditorPane({ onEditorReady, scrollRef }: Props) {
       // 离开上一篇前先把没落库的内容送出去
       const prev = applied.current?.id
       if (prev) void sync.flushNote(prev)
-      editor.commands.setContent(note.content || '', { emitUpdate: false })
+      replaceContent(editor, note.content || '')
+      resetHistory(editor)
 
       const lifted = liftTitleFromBody(editor, note)
       if (lifted !== null) {
@@ -319,7 +351,9 @@ export function EditorPane({ onEditorReady, scrollRef }: Props) {
     const isEditing = dirtyNoteId === note.id || sync.hasPending()
     if (!isEditing && note.content !== applied.current?.content) {
       const { from, to } = editor.state.selection
-      editor.commands.setContent(note.content || '', { emitUpdate: false })
+      replaceContent(editor, note.content || '')
+      // 正文已经是别的设备的版本了，之前本地那些步骤再撤回去没有意义，也撤不对位置
+      resetHistory(editor)
       const max = editor.state.doc.content.size
       try {
         editor.commands.setTextSelection({ from: Math.min(from, max), to: Math.min(to, max) })
@@ -393,7 +427,8 @@ export function EditorPane({ onEditorReady, scrollRef }: Props) {
     if (!editor) return
     if (!activeNoteId || !note) {
       applied.current = null
-      editor.commands.clearContent(false)
+      replaceContent(editor, '')
+      resetHistory(editor)
     }
   }, [editor, activeNoteId, note])
 
