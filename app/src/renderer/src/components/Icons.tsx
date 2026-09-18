@@ -25,6 +25,7 @@ const svg = (path: React.ReactNode, viewBox = '0 0 24 24') =>
   }
 
 export const IconChevron = svg(<path d="M9 5l7 7-7 7" />)
+export const IconBack = svg(<path d="M15 5l-7 7 7 7" />)
 export const IconFolder = svg(<path d="M3 7.5A1.5 1.5 0 0 1 4.5 6h4l2 2.4h7A1.5 1.5 0 0 1 19 9.9v7.6a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 3 17.5z" />)
 export const IconNote = svg(
   <>

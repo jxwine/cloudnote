@@ -85,7 +85,16 @@ export function TagBar({ note }: { note: Note }) {
           {suggestions.length > 0 && (
             <span className="tag-suggest">
               {suggestions.map((t) => (
-                <button key={t} className="tag-suggest-item" onMouseDown={() => commit(t)}>
+                <button
+                  key={t}
+                  className="tag-suggest-item"
+                  // pointerdown 而不是 mousedown：触屏上它一定先于输入框的 blur 到达；
+                  // preventDefault 顺带保住输入框焦点，桌面上行为和原来一样
+                  onPointerDown={(e) => {
+                    e.preventDefault()
+                    commit(t)
+                  }}
+                >
                   {t}
                 </button>
               ))}

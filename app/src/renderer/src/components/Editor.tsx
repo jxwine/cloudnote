@@ -38,6 +38,8 @@ import { TagBar } from './TagBar'
 import { History } from './History'
 import { exportNote } from '@/lib/export'
 import { imagesFromDataTransfer, insertImageFiles } from '@/lib/images'
+import { isDesktop } from '@/lib/platform'
+import { isTouch } from '@/lib/viewport'
 import { EditorToolbar } from './EditorToolbar'
 import { BubbleToolbar } from './BubbleToolbar'
 import { IconClose, IconNote, IconHistory, IconExport } from './Icons'
@@ -270,12 +272,24 @@ export function EditorPane({ onEditorReady, scrollRef }: Props) {
       attributes: { class: 'ProseMirror', spellcheck: 'false' },
       // Ctrl / Cmd + 单击链接交给系统浏览器；不按修饰键时是普通的放光标编辑
       handleClick: (_view, _pos, event) => {
-        if (!(event.ctrlKey || event.metaKey) || event.button !== 0) return false
+        if (event.button !== 0) return false
         const href = (event.target as HTMLElement)?.closest?.('a')?.getAttribute('href')
         if (!href || !SAFE_LINK.test(href)) return false
-        event.preventDefault()
-        window.open(href, '_blank', 'noopener,noreferrer')
-        return true
+        if (event.ctrlKey || event.metaKey) {
+          event.preventDefault()
+          window.open(href, '_blank', 'noopener,noreferrer')
+          return true
+        }
+        // 触屏没有 Ctrl。点到链接不直接跳——编辑时手指很容易误触——光标照常落进去，
+        // 底下弹一条带「打开」的提示，想去再点
+        if (isTouch) {
+          useStore.getState().showToast({
+            message: href.length > 60 ? href.slice(0, 57) + '…' : href,
+            actionLabel: '打开',
+            onAction: () => window.open(href, '_blank', 'noopener,noreferrer'),
+          })
+        }
+        return false
       },
       // 粘贴和拖入的图片一律走上传，不让 base64 进正文
       handlePaste: (_view, event) => {
@@ -432,6 +446,13 @@ export function EditorPane({ onEditorReady, scrollRef }: Props) {
     }
   }, [editor, activeNoteId, note])
 
+  /** 打开查找条。有选中文字就直接拿来当查找词，省一次输入 */
+  const openFind = useCallback(() => {
+    const ed = editorRef.current
+    const sel = ed ? ed.state.doc.textBetween(ed.state.selection.from, ed.state.selection.to, ' ') : ''
+    setFind({ term: sel.trim().slice(0, 80), openedAt: Date.now() })
+  }, [])
+
   /* 保存、查找、替换（默认 Ctrl+S / Ctrl+F / Ctrl+H，设置里可改，绑定表每次现取） */
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -450,15 +471,12 @@ export function EditorPane({ onEditorReady, scrollRef }: Props) {
         if (ed && useStore.getState().activeNoteId) void setLink(ed)
       } else if (id === 'find' || id === 'replace') {
         e.preventDefault()
-        // 有选中文字就直接拿来当查找词，省一次输入
-        const ed = editorRef.current
-        const sel = ed ? ed.state.doc.textBetween(ed.state.selection.from, ed.state.selection.to, ' ') : ''
-        setFind({ term: sel.trim().slice(0, 80), openedAt: Date.now() })
+        openFind()
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [settleTitle])
+  }, [settleTitle, openFind])
 
   /* 换一篇笔记就把查找条收起来，免得停在上一篇的查找词上 */
   useEffect(() => setFind(null), [note?.id])
@@ -482,7 +500,8 @@ export function EditorPane({ onEditorReady, scrollRef }: Props) {
 
   return (
     <div className="editor-pane">
-      <EditorToolbar editor={editor} />
+      {/* 查找按钮只给网页版：手机没有 Ctrl+F；桌面端工具栏保持原样 */}
+      <EditorToolbar editor={editor} onFind={isDesktop ? undefined : openFind} />
       <BubbleToolbar editor={editor} />
       {showHistory && <History note={note} onClose={() => setShowHistory(false)} />}
       {find && (

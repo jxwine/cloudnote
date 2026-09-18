@@ -2,7 +2,24 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- viewport-fit=cover 让刘海屏的 env(safe-area-inset-*) 生效；
+         interactive-widget=resizes-content 让 Android 软键盘弹出时收缩布局视口，
+         编辑区自己把光标滚出来，而不是整页被顶走（iOS 忽略这个参数） -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content"
+    />
+    <!-- 手机浏览器地址栏 / PWA 状态栏的颜色；App.tsx 切换深浅色时会同步改 content -->
+    <meta name="theme-color" content="#f1f2f0" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#17181b" media="(prefers-color-scheme: dark)" />
+    <!-- 「添加到主屏幕」：manifest 给 Android / 桌面 Chrome，apple-* 给 iOS。Electron 走 file:// 会忽略这些 -->
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="云笔记" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" href="/icons/icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
     <meta
       http-equiv="Content-Security-Policy"
       content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: http: https:; connect-src 'self' http://localhost:* ws://localhost:* http: https: ws: wss:"

@@ -32,7 +32,7 @@ export async function login(dev, email, password) {
 
 /** 等到主界面出来、同步连上 */
 export async function waitReady(dev) {
-  await until(() => dev.evaluate(() => !!document.querySelector('.titlebar')), {
+  await until(() => dev.evaluate(() => !!document.querySelector('.titlebar, .m-app')), {
     what: `${dev.name} 主界面`,
   })
   await until(

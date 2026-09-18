@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!-- 云笔记应用图标：品牌色圆角底 + 顶栏那朵云（Icons.tsx 里 IconCloud 的路径），
+       内容缩到中间 60%，maskable 裁成圆形也不会切到云 -->
+  <rect width="512" height="512" rx="112" fill="#14706a"/>
+  <g transform="translate(96 96) scale(13.333)" fill="none" stroke="#ffffff" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M7.2 18.5A4.2 4.2 0 0 1 6.6 10a5.6 5.6 0 0 1 10.8-1.2 3.9 3.9 0 0 1-.6 9.7z"/>
+  </g>
+</svg>

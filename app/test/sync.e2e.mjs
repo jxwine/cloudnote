@@ -59,7 +59,11 @@ async function freshPair(count = 2) {
   return ready
 }
 
+/** 只跑标题含某个词的场景：ONLY=三台 npm run test:sync -- --headless。排查单个场景抖动时不用等全套 */
+const ONLY = process.env.ONLY
+
 async function scenario(title, fn) {
+  if (ONLY && !title.includes(ONLY)) return
   process.stdout.write(`\n▸ ${title}\n`)
   const checks = []
   const expect = (name, res) => {
@@ -506,6 +510,5 @@ main()
     process.exitCode = 1
   })
   .finally(() => {
-    shutdown()
-    setTimeout(() => process.exit(process.exitCode ?? 0), 800)
+    void shutdown().then(() => setTimeout(() => process.exit(process.exitCode ?? 0), 800))
   })

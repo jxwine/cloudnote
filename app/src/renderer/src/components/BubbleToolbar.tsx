@@ -128,6 +128,8 @@ export function BubbleToolbar({ editor }: { editor: Editor | null }) {
           if (!(state.selection instanceof TextSelection)) return false
           if (from === to) return false
           if (ed.isActive('codeBlock') || ed.isActive('image')) return false
+          // 手机上不弹：会和系统自己的「复制 / 粘贴」气泡叠在一起，格式操作走顶部工具栏
+          if (document.documentElement.dataset.viewport === 'phone') return false
           // 编辑区比浮动条还窄时怎么摆都会溢出去压到拖拽线，这时交给顶部工具栏
           if (boundary.clientWidth < 400) return false
           return ed.state.doc.textBetween(from, to, ' ').trim().length > 0

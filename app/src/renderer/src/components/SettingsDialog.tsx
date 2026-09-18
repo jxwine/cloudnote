@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { session } from '@/lib/api'
 import { isDesktop, desktop } from '@/lib/platform'
+import { isTouch } from '@/lib/viewport'
 import { useStore, useBindings, TYPOGRAPHY, type ThemeMode } from '@/lib/store'
 import {
   SHORTCUTS,
@@ -20,7 +21,8 @@ type Section = 'general' | 'appearance' | 'shortcuts' | 'account' | 'about'
 /* 分类和设置项都由数组/JSX 段落驱动，以后加一类就是加一条，不用动布局 */
 const SECTIONS: { key: Section; label: string }[] = [
   { key: 'appearance', label: '外观' },
-  { key: 'shortcuts', label: '快捷键' },
+  // 触屏没有物理键盘，录不了组合键，这一页整个没意义
+  ...(isTouch ? [] : [{ key: 'shortcuts' as const, label: '快捷键' }]),
   { key: 'account', label: '账号' },
   // 「通用」里目前只有开机自启这种桌面端才有的东西，网页版没有内容就不列出来
   ...(isDesktop ? [{ key: 'general' as const, label: '通用' }] : []),

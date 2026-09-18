@@ -10,7 +10,7 @@ import {
   IconBold, IconItalic, IconStrike, IconCode, IconLink,
   IconList, IconListOrdered, IconTask, IconQuote, IconCodeBlock,
   IconTable, IconRule, IconHeading, IconUndo, IconRedo,
-  IconUnderline, IconClearFormat, IconImage, IconUpload, IconPlus,
+  IconUnderline, IconClearFormat, IconImage, IconUpload, IconPlus, IconSearch,
 } from './Icons'
 
 async function insertImageUrl(editor: Editor) {
@@ -38,7 +38,13 @@ function useEditorTick(editor: Editor | null) {
   }, [editor])
 }
 
-export function EditorToolbar({ editor }: { editor: Editor | null }) {
+interface Props {
+  editor: Editor | null
+  /** 传了就多一个查找按钮。网页版给（手机没有 Ctrl+F），桌面端不传，工具栏保持原样 */
+  onFind?: () => void
+}
+
+export function EditorToolbar({ editor, onFind }: Props) {
   useEditorTick(editor)
   const menu = useContextMenu()
   const bindings = useBindings()
@@ -113,6 +119,7 @@ export function EditorToolbar({ editor }: { editor: Editor | null }) {
       <ColorPicker editor={editor} kind="highlight" />
       {btn('code', '行内代码', <IconCode />, () => editor.chain().focus().toggleCode().run(), editor.isActive('code'))}
       {btn('link', `链接 (${formatCombo(bindings.link)})`, <IconLink />, () => void setLink(editor), editor.isActive('link'))}
+      {onFind && btn('find', `查找替换 (${formatCombo(bindings.find)})`, <IconSearch />, onFind)}
 
       <span className="bar-divider" />
 

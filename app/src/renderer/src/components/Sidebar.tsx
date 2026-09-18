@@ -9,6 +9,7 @@ import {
   type DragPayload, type DropPosition, type DropTarget,
 } from '@/lib/dnd'
 import { useContextMenu, type MenuAction } from './ContextMenu'
+import { isTouch } from '@/lib/viewport'
 import { SearchResults } from './SearchResults'
 import { Trash } from './Trash'
 import { TagList } from './TagList'
@@ -172,7 +173,9 @@ export function Sidebar() {
   }
 
   const dragProps = (payload: DragPayload) => ({
-    draggable: !renaming,
+    // 触屏上 draggable 会抢走长按，contextmenu 就不来了；而且 iOS 根本不支持 HTML5 拖拽。
+    // 手机上排序/归档走菜单里的「移出目录」，拖拽只留给鼠标
+    draggable: !renaming && !isTouch,
     onDragStart: (e: React.DragEvent) => {
       e.dataTransfer.effectAllowed = 'move'
       e.dataTransfer.setData(DND_MIME, JSON.stringify(payload))

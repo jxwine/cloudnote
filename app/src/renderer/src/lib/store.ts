@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import type { ConflictNotice, Folder, Note, PromptRequest, SyncStatus, Toast, User } from './types'
 import { session } from './api'
 import { SHORTCUTS, resolveBindings, type ShortcutId, type ShortcutOverrides } from './shortcuts'
+import { readViewport, type Viewport } from './viewport'
 
 const CACHE_KEY = 'cloudnote.cache'
 const UI_KEY = 'cloudnote.ui'
@@ -122,6 +123,17 @@ interface State extends CacheShape, UiShape {
   dialog: PromptRequest | null
   /** 每点一次搜索结果就加新，用来触发正文跳到命中处——点的可能正是已打开的那篇 */
   searchJump: number
+  /**
+   * 网页版的屏幕档位（见 lib/viewport.ts）。桌面端恒为 desktop。
+   * 不持久化：它由窗口尺寸决定，记下来没有意义。
+   */
+  viewport: Viewport
+  /**
+   * 手机 / 平板上正打开的那个覆盖式抽屉。
+   * 故意和 leftOpen / rightOpen 分开：那两个是桌面三栏的持久化偏好，
+   * 手机上进来就两边全开会把编辑区盖死，所以抽屉状态独立、不落盘、默认关。
+   */
+  drawer: 'left' | 'right' | null
 
   setUser(user: User | null): void
   setStatus(status: SyncStatus, peers?: number): void
@@ -134,6 +146,8 @@ interface State extends CacheShape, UiShape {
   toggleExpand(id: string, value?: boolean): void
   setPanel(side: 'left' | 'right', open: boolean): void
   setPanelWidth(side: 'left' | 'right', px: number): void
+  setViewport(v: Viewport): void
+  setDrawer(d: 'left' | 'right' | null): void
   setSearch(q: string): void
   setSidebarView(view: 'tree' | 'tags' | 'trash'): void
   setAuthExpired(reason: string | null): void
@@ -216,6 +230,8 @@ export const useStore = create<State>((set, get) => {
     toast: null,
     dialog: null,
     searchJump: 0,
+    viewport: readViewport(),
+    drawer: null,
 
     prompt: (opts) =>
       new Promise<string | null>((resolve) => set({ dialog: { ...opts, resolve } })),
@@ -305,6 +321,9 @@ export const useStore = create<State>((set, get) => {
       persistUi()
     },
 
+    setViewport: (viewport) => set({ viewport }),
+    setDrawer: (drawer) => set({ drawer }),
+
     setSearch: (search) => set({ search }),
     setSidebarView: (sidebarView) => set({ sidebarView, tagFilter: null }),
     setAuthExpired: (authExpired) => set({ authExpired }),
@@ -372,6 +391,7 @@ export const useStore = create<State>((set, get) => {
         sidebarView: 'tree',
         tagFilter: null,
         authExpired: null,
+        drawer: null,
       })
     },
   }

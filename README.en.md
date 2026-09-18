@@ -28,7 +28,7 @@ No native modules, no external database, no third-party service.
 - **Lives in the tray**: closing the window only hides it; the app keeps running and keeps syncing
 - **Self-updating**: the client finds new versions on its own, downloads in-app, verifies the sha256, launches the installer
 - **Web admin**: manage accounts and publish client builds; the web app also offers the installer for download
-- **Web version**: same frontend code, usable straight from a browser, live-synced with the desktop app
+- **Web version**: same frontend code, usable straight from a browser, live-synced with the desktop app; phones get a card-based home screen with a full-screen editor, tablets fold the outline into a drawer, and it can be added to the home screen
 
 ## Tech stack
 

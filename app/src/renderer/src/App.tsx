@@ -15,7 +15,10 @@ import { SettingsDialog } from './components/SettingsDialog'
 import { AuthExpiredDialog } from './components/AuthExpiredDialog'
 import { UpdateDialog } from './components/UpdateDialog'
 import { AdminApp } from './components/admin/AdminApp'
+import { MobileShell } from './components/mobile/MobileShell'
+import { useSyncLifecycle } from '@/lib/useSyncLifecycle'
 import { desktop, isDesktop } from '@/lib/platform'
+import { isTouch, watchViewport } from '@/lib/viewport'
 import { checkUpdate, downloadClient, type UpdateInfo } from '@/lib/update'
 import {
   IconCloud, IconPanelLeft, IconPanelRight, IconJump, IconTrash,
@@ -33,6 +36,8 @@ export default function App() {
   }, [])
 
   useTheme()
+  useViewportAttr()
+  const viewport = useStore((s) => s.viewport)
 
   if (!user) return <LoginView />
   // 后台只在网页端开放：它是运维用的，浏览器里开就行，没必要占客户端的入口。
@@ -40,6 +45,8 @@ export default function App() {
   if (route === '#/admin' && user.isAdmin && !isDesktop) {
     return <AdminApp onExit={() => { location.hash = '' }} />
   }
+  // 手机是另一套外壳：首页卡片 + 全屏编辑页，不是把三栏压扁。桌面端 viewport 恒为 desktop，永远走 Workspace
+  if (viewport === 'phone') return <MobileShell route={route} />
   return <Workspace />
 }
 
@@ -94,6 +101,10 @@ function useTheme() {
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme
+    // 手机浏览器的地址栏 / PWA 状态栏跟着应用内的配色走，别亮色界面配一条深色地址栏
+    document
+      .querySelectorAll<HTMLMetaElement>('meta[name="theme-color"]')
+      .forEach((m) => { m.content = theme === 'dark' ? '#17181b' : '#f1f2f0' })
   }, [theme])
 
   // 排版设置挂成 CSS 变量，app.css 里 .ProseMirror 读它们；登录页没有编辑器，挂上也无妨
@@ -106,19 +117,63 @@ function useTheme() {
   }, [lineHeight, paragraphSpacing])
 }
 
+/**
+ * 把屏幕档位挂到 <html data-viewport>，触屏再挂一个 data-touch。
+ * 响应式样式全部以这两个属性做前缀；桌面端永远不挂，所以那些规则在 Electron 里一条都不生效。
+ * 放在 App 顶层：登录页也要吃到（输入框 16px 防 iOS 聚焦缩放之类）。
+ */
+function useViewportAttr() {
+  const setViewport = useStore((s) => s.setViewport)
+  useEffect(() => {
+    const root = document.documentElement
+    if (isTouch) root.dataset.touch = ''
+    return watchViewport((v) => {
+      setViewport(v)
+      if (v === 'desktop') delete root.dataset.viewport
+      else root.dataset.viewport = v
+    })
+  }, [setViewport])
+}
+
 function Workspace() {
   const bindings = useBindings()
   const leftOpen = useStore((s) => s.leftOpen)
   const rightOpen = useStore((s) => s.rightOpen)
   const leftWidth = useStore((s) => s.leftWidth)
   const rightWidth = useStore((s) => s.rightWidth)
-  const setPanel = useStore((s) => s.setPanel)
   const activeNoteId = useStore((s) => s.activeNoteId)
   const user = useStore((s) => s.user)
   const sidebarView = useStore((s) => s.sidebarView)
   const setSidebarView = useStore((s) => s.setSidebarView)
   const trashCount = useStore((s) => Object.values(s.notes).filter((n) => n.deleted).length)
   const showToast = useStore((s) => s.showToast)
+  const viewport = useStore((s) => s.viewport)
+  const drawer = useStore((s) => s.drawer)
+  const setDrawer = useStore((s) => s.setDrawer)
+
+  /*
+   * 平板上大纲是覆盖式抽屉（目录树留在原位）；桌面都不是。
+   * 抽屉只看 drawer，不碰 rightOpen——那是桌面三栏的持久化偏好。
+   */
+  const rightAsDrawer = viewport === 'tablet'
+  const leftShown = leftOpen
+  const rightShown = rightAsDrawer ? drawer === 'right' : rightOpen
+
+  /** 开合某一侧的唯一入口：抽屉侧改 drawer，其余走原来的 setPanel（带持久化） */
+  const toggleSide = useCallback((side: 'left' | 'right', open?: boolean) => {
+    const s = useStore.getState()
+    if (side === 'right' && s.viewport === 'tablet') {
+      const next = open ?? s.drawer !== 'right'
+      s.setDrawer(next ? 'right' : null)
+    } else {
+      s.setPanel(side, open ?? !(side === 'left' ? s.leftOpen : s.rightOpen))
+    }
+  }, [])
+
+  /* 回到桌面三栏时抽屉这个概念不存在，收掉，否则遮罩会一直挂着 */
+  useEffect(() => {
+    if (viewport === 'desktop') setDrawer(null)
+  }, [viewport, setDrawer])
 
   const [editor, setEditor] = useState<Editor | null>(null)
   const [quickJump, setQuickJump] = useState(false)
@@ -131,24 +186,7 @@ function Workspace() {
 
   const onEditorReady = useCallback((e: Editor | null) => setEditor(e), [])
 
-  /* 启动同步；窗口重新获得焦点时补一次增量拉取，防止睡眠期间漏消息 */
-  useEffect(() => {
-    sync.start()
-    // 用 syncNow 而不是裸的 pullDelta：必须先把本地攒着的改动送出去再拉远端，
-    // 否则合盖再打开这一下就会把别的设备刚写的内容静默盖掉
-    const onFocus = () => void sync.syncNow()
-    const onOnline = () => {
-      sync.stop()
-      sync.start()
-    }
-    window.addEventListener('focus', onFocus)
-    window.addEventListener('online', onOnline)
-    return () => {
-      sync.stop()
-      window.removeEventListener('focus', onFocus)
-      window.removeEventListener('online', onOnline)
-    }
-  }, [])
+  useSyncLifecycle()
 
   /* 快捷键：新建笔记、快速跳转、开合两侧栏。绑定表每次现取，改了设置立刻生效 */
   useEffect(() => {
@@ -162,15 +200,15 @@ function Workspace() {
         setQuickJump(true)
       } else if (id === 'toggleLeft') {
         e.preventDefault()
-        setPanel('left', !useStore.getState().leftOpen)
+        toggleSide('left')
       } else if (id === 'toggleRight') {
         e.preventDefault()
-        setPanel('right', !useStore.getState().rightOpen)
+        toggleSide('right')
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [setPanel])
+  }, [toggleSide])
 
   /* 更新检查：登录后过 8 秒静默查一次，之后每 6 小时一次。
      查不到或者出错都不打扰用户——这个功能失败了不该弹窗。 */
@@ -209,18 +247,18 @@ function Workspace() {
         </span>
 
         <button
-          className={'icon-btn' + (leftOpen ? ' is-on' : '')}
+          className={'icon-btn' + (leftShown ? ' is-on' : '')}
           title={`目录栏 (${formatCombo(bindings.toggleLeft)})`}
-          aria-pressed={leftOpen}
-          onClick={() => setPanel('left', !leftOpen)}
+          aria-pressed={leftShown}
+          onClick={() => toggleSide('left')}
         >
           <IconPanelLeft />
         </button>
         <button
-          className={'icon-btn' + (rightOpen ? ' is-on' : '')}
+          className={'icon-btn' + (rightShown ? ' is-on' : '')}
           title={`大纲栏 (${formatCombo(bindings.toggleRight)})`}
-          aria-pressed={rightOpen}
-          onClick={() => setPanel('right', !rightOpen)}
+          aria-pressed={rightShown}
+          onClick={() => toggleSide('right')}
         >
           <IconPanelRight />
         </button>
@@ -231,7 +269,7 @@ function Workspace() {
           onClick={() => {
             // 再点一次退回笔记列表，当成一个开关用
             setSidebarView(sidebarView === 'trash' ? 'tree' : 'trash')
-            if (!leftOpen) setPanel('left', true)
+            if (!leftShown) toggleSide('left', true)
           }}
         >
           <IconTrash />
@@ -264,27 +302,37 @@ function Workspace() {
 
       <div className="workspace">
         <aside
-          className={'panel panel-left' + (leftOpen ? '' : ' is-collapsed')}
+          className={'panel panel-left' + (leftShown ? '' : ' is-collapsed')}
           style={{ width: leftWidth }}
         >
           <Sidebar />
         </aside>
-        {leftOpen && <Resizer side="left" />}
+        {leftShown && <Resizer side="left" />}
 
         <EditorPane onEditorReady={onEditorReady} scrollRef={scrollRef} />
 
-        {rightOpen && <Resizer side="right" />}
+        {rightShown && !rightAsDrawer && <Resizer side="right" />}
         <aside
-          className={'panel panel-right' + (rightOpen ? '' : ' is-collapsed')}
-          style={{ width: rightWidth }}
+          className={'panel panel-right' + panelState(rightAsDrawer, rightShown)}
+          style={rightAsDrawer ? undefined : { width: rightWidth }}
         >
           <div className="panel-head">
             <span className="panel-title">大纲</span>
           </div>
           <div className="panel-body">
-            <Outline editor={editor} scrollRef={scrollRef} noteId={activeNoteId} />
+            <Outline
+              editor={editor}
+              scrollRef={scrollRef}
+              noteId={activeNoteId}
+              onNavigate={rightAsDrawer ? () => setDrawer(null) : undefined}
+            />
           </div>
         </aside>
+
+        {/* 平板上大纲抽屉打开时压在编辑区上的遮罩，点一下收回 */}
+        {rightAsDrawer && drawer === 'right' && (
+          <div className="drawer-backdrop" onClick={() => setDrawer(null)} />
+        )}
       </div>
 
       <Toast />
@@ -303,6 +351,11 @@ function Workspace() {
     </div>
   )
 }
+
+/** 大纲栏的开合类名：平板抽屉用 is-open 滑入滑出（is-collapsed 带 width:0 !important，抽屉不能沾它），
+ *  原位面板用 is-collapsed 挤成零宽 */
+const panelState = (asDrawer: boolean, shown: boolean) =>
+  asDrawer ? (shown ? ' is-open' : '') : shown ? '' : ' is-collapsed'
 
 /** 拖动改变侧栏宽度 */
 function Resizer({ side }: { side: 'left' | 'right' }) {

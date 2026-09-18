@@ -79,8 +79,14 @@ async function waitPort(port, what, timeout = 30000) {
   )
 }
 
-/** 整套环境只起一次，场景之间靠换数据库和清 localStorage 来隔离 */
-export async function bootEnv({ tmpDir }) {
+/** 起过的浏览器调试端口，收尾时先走 CDP 让它们体面退出 */
+const browserPorts = []
+
+/**
+ * 整套环境只起一次，场景之间靠换数据库和清 localStorage 来隔离。
+ * browsers：要几台「设备」，默认三台；只看布局的测试给 1 就够了，省内存也省时间。
+ */
+export async function bootEnv({ tmpDir, browsers = 3 }) {
   if (!existsSync(join(appDir, 'out', 'renderer', 'index.html'))) {
     throw new Error('还没有构建产物，先跑：npm --prefix app run build')
   }
@@ -115,7 +121,7 @@ export async function bootEnv({ tmpDir }) {
     [PORT_A, 'A'],
     [PORT_B, 'B'],
     [PORT_C, 'C'],
-  ]) {
+  ].slice(0, browsers)) {
     const profile = join(tmpDir, 'chrome-' + label)
     rmSync(profile, { recursive: true, force: true })
     runExe(chrome, [
@@ -124,10 +130,14 @@ export async function bootEnv({ tmpDir }) {
       '--no-first-run',
       '--no-default-browser-check',
       '--disable-features=Translate',
+      // 定死一个桌面尺寸：无头模式默认 800×600，会落进网页版的「平板」档，
+      // 大纲变成抽屉，选择器就对不上了。同步回归要在桌面三栏下跑
+      '--window-size=1400,900',
       ...(headless ? ['--headless=new'] : []),
       WEB_URL,
     ])
     await waitPort(port, `浏览器 ${label}`)
+    browserPorts.push(port)
     devices.push({ port, name: label })
   }
   await sleep(1500)
@@ -150,13 +160,39 @@ export async function bootEnv({ tmpDir }) {
 }
 
 /**
+ * 让某个调试端口上的浏览器自己退出。
+ *
+ * Windows 上 spawn 出来的 chrome.exe 只是个引导进程，真正的浏览器是它再拉起的、
+ * 不在我们进程树里——按 pid /T 杀不到，跑一次测试就留一整套 Chrome 在后台吃内存
+ * （攒了四轮之后机器直接 MEM_COMMIT 失败）。走 CDP 的 Browser.close 才能收干净。
+ */
+async function closeBrowser(port) {
+  try {
+    const info = await fetch(`http://127.0.0.1:${port}/json/version`, { signal: AbortSignal.timeout(1500) }).then((r) => r.json())
+    const ws = new WebSocket(info.webSocketDebuggerUrl)
+    await new Promise((res, rej) => {
+      ws.addEventListener('open', res, { once: true })
+      ws.addEventListener('error', rej, { once: true })
+    })
+    ws.send(JSON.stringify({ id: 1, method: 'Browser.close' }))
+    await new Promise((res) => {
+      ws.addEventListener('close', res, { once: true })
+      setTimeout(res, 2000)
+    })
+  } catch {
+    /* 已经不在了就算了 */
+  }
+}
+
+/**
  * 只收拾**这套测试自己起的**进程。
  *
- * 按 pid 加 /T 连子进程一起收，绝不按进程名一刀切——
- * `taskkill /IM chrome.exe /F` 会把用户自己开着的浏览器一并杀掉，
+ * 浏览器先走 CDP 体面退出（见 closeBrowser），剩下的按 pid 加 /T 连子进程一起收，
+ * 绝不按进程名一刀切——`taskkill /IM chrome.exe /F` 会把用户自己开着的浏览器一并杀掉，
  * 那是别人正在用的东西。
  */
-export function shutdown() {
+export async function shutdown() {
+  await Promise.all(browserPorts.splice(0).map(closeBrowser))
   for (const p of procs) {
     try {
       if (process.platform === 'win32' && p.pid) {

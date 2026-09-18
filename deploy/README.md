@@ -205,15 +205,28 @@ cd app
 VITE_CLOUDNOTE_SERVER=https://note.example.com npm run build
 ```
 
-产物在 `app/out/renderer/`，一共三个文件、不到 2MB：
+产物在 `app/out/renderer/`，整个目录不到 2MB：
 
 ```
 index.html
 assets/index-xxxx.js
 assets/index-xxxx.css
+manifest.webmanifest     ← 手机「添加到主屏幕」用
+icons/                   ← 主屏幕图标
 ```
 
-**2. 上传**到站点根目录 `/www/wwwroot/note.example.com/`（建站时自动创建的那个目录）。
+**2. 上传**整个目录到站点根目录 `/www/wwwroot/note.example.com/`（建站时自动创建的那个目录）。
+`assets/` 里的文件名带哈希，上传新版后把旧的删掉。
+
+网页版会按屏幕宽度自动切换布局：手机上是卡片首页 + 全屏编辑页（右上角目录 / 设置，右下角新建），
+平板上目录树留着、大纲是抽屉，笔记本以上就是和桌面端一样的三栏。安卓 Chrome 里「添加到主屏幕」能像 App 一样全屏打开。
+如果 Nginx 版本老到不认 `.webmanifest`（1.17 之前），补一条：
+
+```nginx
+location = /manifest.webmanifest {
+    types { application/manifest+json webmanifest; }
+}
+```
 
 **3. Nginx** 里加上根路径的规则，放在那几段 `^~` 反代**之后**：
 

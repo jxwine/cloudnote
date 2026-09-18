@@ -7,9 +7,11 @@ interface Props {
   editor: Editor | null
   scrollRef: React.RefObject<HTMLDivElement>
   noteId: string | null
+  /** 点了某一项之后再做点什么。手机 / 平板上大纲是抽屉，跳过去之后要把它收起来 */
+  onNavigate?: () => void
 }
 
-export function Outline({ editor, scrollRef, noteId }: Props) {
+export function Outline({ editor, scrollRef, noteId, onNavigate }: Props) {
   const [items, setItems] = useState<OutlineItem[]>([])
   const [active, setActive] = useState<string | null>(null)
 
@@ -80,6 +82,7 @@ export function Outline({ editor, scrollRef, noteId }: Props) {
           onClick={() => {
             scrollToPos(editor, item.pos, scrollRef.current)
             setActive(item.id)
+            onNavigate?.()
           }}
         >
           <span className="outline-text">{item.text}</span>

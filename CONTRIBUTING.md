@@ -90,6 +90,22 @@ npm run test:sync          # 会先 build，再开两个真实浏览器窗口当
 它开两个互相独立的 Chrome 实例，用真实键盘输入、真实断网、真实的请求失败注入，
 把五个场景各跑一遍（含 17 项断言）。想看得见窗口就直接跑，CI 里加 `-- --headless`。
 Chrome 不在默认位置的话用 `CHROME_PATH=... ` 指过去。
+只想复跑一个场景：`ONLY=三台 npm run test:sync -- --headless`（按标题子串过滤）。
+
+改了 `app.css` 末尾的响应式段落、`components/mobile/`（手机外壳）、`App.tsx` 的平板抽屉逻辑或 `lib/viewport.ts`，跑这个：
+
+```bash
+npm --prefix app run test:responsive -- --headless
+```
+
+一个 Chrome，用设备模拟把视口切成 320 / 390 / 768 / 1024 / 1366 五个宽度，
+每档截图到 `app/test/.shots/` 并量几何做断言（手机档卡片首页 / 编辑页 / 目录面板走一遍、
+平板抽屉是否真的滑出屏外、1366 下是不是还是 248 / 232 的三栏）。
+
+手机档（≤720px）不是把三栏压扁，而是 `components/mobile/` 里另一套外壳：首页卡片 + 全屏编辑页，
+路由用 `#/note`。平板档（≤1024px）仍是 Workspace，只把大纲改成抽屉。响应式规则全部以
+`html[data-viewport]` / `html[data-touch]` 为前缀（手机外壳自己的 `.m-*` 类只在那套外壳里出现），
+只有网页版会挂这两个属性——桌面端窗口拖多窄都得是三栏，这是刻意的，别写裸 `@media`。
 
 `app/test/invariants.mjs` 里那几条是**底线**，不是某个用例的期望值：
 

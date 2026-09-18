@@ -3337,3 +3337,669 @@ body.is-reflowing .bubble-bar {
   color: var(--text);
   font-weight: 600;
 }
+
+
+/* ============================ 响应式（仅网页版） ============================
+ *
+ * 这一节的每条规则都以 html[data-viewport…] 或 html[data-touch] 开头，
+ * 或者是只在手机外壳（components/mobile/）里出现的 .m-* 类。
+ * data-viewport / data-touch 由 App.tsx 的 useViewportAttr 挂上，只有网页版会挂——Electron 里
+ * isDesktop 恒真，永远不挂，所以下面所有规则在桌面端一条都匹配不到，窗口拖多窄都是三栏。
+ * 不写裸 @media，就是为了守住这条线。
+ *
+ *   data-viewport="tablet"  ≤ 1024px：目录树留在原位收窄，大纲改成抽屉（还是 Workspace）
+ *   data-viewport="phone"   ≤ 720px：另一套外壳（components/mobile/），首页卡片 + 全屏编辑页
+ *   data-touch              主要输入是触屏（无 hover）：按钮常显、触控目标放大
+ */
+
+/* ---------- 平板：大纲抽屉 ----------
+ * 抽屉侧 App.tsx 不再加 is-collapsed（它带 width:0 !important）也不传内联宽度，
+ * 用 is-open 控制 transform 进出，这里才能不靠 !important 定宽。 */
+html[data-viewport='tablet'] .panel-right {
+  position: fixed;
+  top: var(--titlebar-h);
+  right: 0;
+  bottom: 0;
+  width: min(84vw, 320px);
+  /* 压住编辑区，但要低于 .menu 的 100 */
+  z-index: 80;
+  opacity: 1;
+  pointer-events: auto;
+  background: var(--bg);
+  box-shadow: var(--shadow-pop);
+  transform: translateX(100%);
+  transition: transform 0.22s var(--ease);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+html[data-viewport='tablet'] .panel-right.is-open {
+  transform: none;
+}
+
+html[data-viewport='tablet'] .drawer-backdrop {
+  position: fixed;
+  inset: var(--titlebar-h) 0 0 0;
+  z-index: 70;
+  background: rgba(18, 20, 24, 0.28);
+  animation: fade-in 0.12s ease;
+}
+
+/* 目录树留在原位但收窄（内联宽度是 248，max-width 压得住；is-collapsed 的 width:0 不受影响） */
+html[data-viewport='tablet'] .panel-left {
+  max-width: 220px;
+}
+
+html[data-viewport='tablet'] .editor-sheet {
+  padding: 22px clamp(20px, 5%, 60px) 45vh;
+}
+
+/* 平板上还能拖目录栏宽度，5px 的手柄手指抓不住 */
+html[data-viewport='tablet'] .resizer {
+  width: 12px;
+  margin: 0 -6px;
+}
+
+/* ---------- 手机 + 平板共用：触控目标、滚动手感 ---------- */
+html[data-viewport] .tree-row {
+  height: 40px;
+}
+
+html[data-viewport] .editor-bar {
+  height: 44px;
+}
+
+html[data-viewport] .editor-bar .icon-btn {
+  width: 32px;
+  height: 32px;
+}
+
+html[data-viewport] .outline-item {
+  min-height: 36px;
+  display: flex;
+  align-items: center;
+}
+
+html[data-viewport] .menu-item {
+  min-height: 38px;
+}
+
+html[data-viewport] .panel-body,
+html[data-viewport] .editor-scroll {
+  overscroll-behavior: contain;
+}
+
+html[data-viewport] .icon-btn,
+html[data-viewport] .tree-row,
+html[data-viewport] .panel-tab,
+html[data-viewport] .outline-item {
+  touch-action: manipulation;
+}
+
+html[data-viewport] * {
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* ---------- 手机：通用 ---------- */
+html[data-viewport='phone'] {
+  /* 刘海屏：顶栏往下让出状态栏。overlay 的 top 也读这个变量 */
+  --titlebar-h: calc(48px + env(safe-area-inset-top, 0px));
+}
+
+/* 输入类控件一律 ≥16px——iOS 在更小的输入框聚焦时会把整页放大 */
+html[data-viewport='phone'] .ProseMirror,
+html[data-viewport='phone'] input,
+html[data-viewport='phone'] textarea {
+  font-size: 16px;
+}
+
+html[data-viewport='phone'] .ProseMirror table {
+  font-size: 15px;
+}
+
+/* 弹窗：贴顶而不是居中——软键盘弹出来时居中的对话框会被顶出视口 */
+html[data-viewport='phone'] .overlay {
+  align-items: flex-start;
+  padding: 16px 12px 12px;
+}
+
+html[data-viewport='phone'] .overlay-top {
+  padding-top: 16px;
+}
+
+html[data-viewport='phone'] .dialog,
+html[data-viewport='phone'] .dialog.settings,
+html[data-viewport='phone'] .jump,
+html[data-viewport='phone'] .history {
+  max-width: none;
+}
+
+/* 设置：620 那条裸断点管不到 620–720 的横屏手机，这里按档位再铺一遍 */
+html[data-viewport='phone'] .settings-body {
+  flex-direction: column;
+  height: auto;
+  min-height: 0;
+  max-height: calc(100vh - var(--titlebar-h) - 100px);
+  overflow: auto;
+}
+
+html[data-viewport='phone'] .settings-nav {
+  flex: 0 0 auto;
+  flex-direction: row;
+  overflow-x: auto;
+  border-right: none;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+html[data-viewport='phone'] .settings-row {
+  align-items: flex-start;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* 历史版本：左右分栏在手机上各剩一百来像素，改成上下 */
+html[data-viewport='phone'] .history {
+  height: calc(100vh - var(--titlebar-h) - 28px);
+}
+
+html[data-viewport='phone'] .history-body {
+  flex-direction: column;
+}
+
+html[data-viewport='phone'] .history-list {
+  width: auto;
+  max-height: 38%;
+  border-right: 0;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+/* 提示条抬高一点，别压住右下角的 ⊕ 和编辑页底部的工具栏 */
+html[data-viewport='phone'] .toast {
+  left: 12px;
+  right: 12px;
+  bottom: calc(96px + env(safe-area-inset-bottom, 0px));
+  transform: none;
+  max-width: none;
+  /* 压在页面上但让位给底部面板（90/95），别盖住面板里的行 */
+  z-index: 85;
+}
+
+html[data-viewport='phone'] .menu {
+  max-width: calc(100vw - 16px);
+}
+
+/* ---------- 手机外壳（components/mobile/，只在手机档渲染） ---------- */
+.m-app {
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.m-home,
+.m-note {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  position: relative;
+}
+
+/* 顶栏：只有图标，标题在下面的大字里 */
+.m-top {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: var(--titlebar-h);
+  padding: env(safe-area-inset-top, 0px) 8px 0;
+  box-sizing: border-box;
+}
+
+.m-top-gap {
+  flex: 1;
+}
+
+.m-top .sync-chip {
+  margin-left: 6px;
+  font-size: 12.5px;
+}
+
+.m-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  color: var(--text);
+  flex: 0 0 auto;
+}
+
+.m-icon:active {
+  background: var(--hover);
+}
+
+.m-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 4px 16px calc(96px + env(safe-area-inset-bottom, 0px));
+}
+
+.m-title {
+  user-select: none;
+  -webkit-user-select: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 8px 0 14px;
+  font-size: 32px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.m-title-icon {
+  color: var(--text-2);
+  flex: 0 0 auto;
+}
+
+.m-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 40px;
+  padding: 0 14px;
+  margin-bottom: 14px;
+  border-radius: 20px;
+  background: var(--raised);
+  color: var(--text-3);
+}
+
+.m-search input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: none;
+  outline: none;
+  color: var(--text);
+  font-family: inherit;
+}
+
+.m-search input::placeholder {
+  color: var(--text-3);
+}
+
+.m-search-clear {
+  display: inline-flex;
+  width: 28px;
+  height: 28px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  color: var(--text-2);
+}
+
+/* 两列瀑布流：卡片高矮不一，用 columns 而不是 grid，右列不用等左列 */
+.m-grid {
+  column-count: 2;
+  column-gap: 12px;
+}
+
+.m-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  margin-bottom: 12px;
+  padding: 16px;
+  /* 长按是弹菜单，不是选字：安卓长按会先把标题 / 摘要选中，iOS 还会弹系统的复制气泡 */
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+  border-radius: 16px;
+  background: var(--raised);
+  box-shadow: 0 1px 2px rgba(24, 26, 30, 0.04);
+  text-align: left;
+  color: var(--text);
+  break-inside: avoid;
+  transition: transform 0.1s;
+}
+
+.m-card:active {
+  transform: scale(0.98);
+}
+
+.m-card-title {
+  font-size: 17px;
+  font-weight: 600;
+  line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.m-card-title.is-untitled {
+  color: var(--text-3);
+  font-weight: 500;
+}
+
+.m-card-excerpt {
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--text-2);
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  word-break: break-word;
+}
+
+.m-card-date {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+.m-empty {
+  padding: 48px 12px;
+  text-align: center;
+  color: var(--text-3);
+  font-size: 14px;
+}
+
+/* 搜索结果 / 标签 / 回收站复用侧栏那几个列表组件，给它们一块卡片式的底 */
+.m-list {
+  padding: 4px 4px 12px;
+  border-radius: 16px;
+  background: var(--raised);
+}
+
+.m-list .hit,
+.m-list .taglist-item {
+  min-height: 44px;
+}
+
+.m-list .tree-empty {
+  padding: 32px 12px;
+  text-align: center;
+}
+
+.m-fab {
+  position: absolute;
+  right: 20px;
+  bottom: calc(24px + env(safe-area-inset-bottom, 0px));
+  width: 58px;
+  height: 58px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--accent);
+  color: #fff;
+  box-shadow: 0 6px 18px rgba(20, 112, 106, 0.35);
+  z-index: 20;
+  transition: transform 0.1s;
+}
+
+.m-fab:active {
+  transform: scale(0.94);
+}
+
+/* 底部面板 */
+.m-sheet-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  background: rgba(18, 20, 24, 0.32);
+  animation: fade-in 0.12s ease;
+}
+
+.m-sheet {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 95;
+  display: flex;
+  flex-direction: column;
+  max-height: 72vh;
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  border-radius: 18px 18px 0 0;
+  background: var(--raised);
+  box-shadow: var(--shadow-pop);
+  animation: sheet-in 0.2s var(--ease);
+}
+
+@keyframes sheet-in {
+  from {
+    transform: translateY(24px);
+    opacity: 0;
+  }
+}
+
+.m-sheet-grip {
+  width: 36px;
+  height: 4px;
+  margin: 8px auto 4px;
+  border-radius: 2px;
+  background: var(--line);
+}
+
+.m-sheet-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 2px 12px 4px 20px;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-2);
+}
+
+.m-sheet-head-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  color: var(--accent);
+}
+
+.m-sheet-head-btn:active {
+  background: var(--hover);
+}
+
+/* 「所有笔记」是入口不是目录：字更重、图标用品牌色，和下面的目录列表分开 */
+.m-sheet-row.is-all {
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.m-sheet-row.is-all .m-sheet-icon {
+  color: var(--accent);
+}
+
+.m-sheet-section {
+  padding: 10px 16px 4px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--text-3);
+}
+
+.m-sheet-hint {
+  padding: 14px 16px;
+  font-size: 13px;
+  color: var(--text-3);
+}
+
+.m-sheet-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 8px 8px;
+}
+
+.m-sheet-row {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-height: 48px;
+  user-select: none;
+  -webkit-user-select: none;
+  border-radius: 10px;
+  color: var(--text);
+  font-size: 15px;
+  text-align: left;
+}
+
+button.m-sheet-row {
+  padding: 0 16px;
+  gap: 12px;
+}
+
+.m-sheet-row.is-active {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.m-sheet-row.is-action {
+  color: var(--accent);
+}
+
+.m-sheet-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 48px;
+  padding: 0 8px 0 16px;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+
+.m-sheet-icon {
+  flex: 0 0 auto;
+  color: var(--text-2);
+}
+
+.m-sheet-row.is-active .m-sheet-icon,
+.m-sheet-row.is-action .m-sheet-icon {
+  color: var(--accent);
+}
+
+.m-sheet-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.m-sheet-count {
+  font-size: 13px;
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.m-sheet-more {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 48px;
+  color: var(--text-2);
+  flex: 0 0 auto;
+}
+
+.m-sheet-sep {
+  height: 1px;
+  margin: 6px 12px;
+  background: var(--line-soft);
+}
+
+.m-outline {
+  padding: 4px 12px 12px;
+}
+
+/* ---------- 手机：编辑页里的 EditorPane ---------- */
+html[data-viewport='phone'] .m-note .editor-pane {
+  flex: 1;
+  min-height: 0;
+}
+
+/* 格式工具栏挪到底部：.editor-pane 是 flex column，order 一改就贴到最下面；
+   viewport meta 里的 interactive-widget=resizes-content 让布局视口随键盘收缩，它就刚好压在键盘上方 */
+html[data-viewport='phone'] .editor-bar {
+  order: 2;
+  height: 48px;
+  padding: 0 6px;
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  box-sizing: content-box;
+  border-top: 1px solid var(--line-soft);
+  border-bottom: 0;
+  background: var(--raised);
+}
+
+html[data-viewport='phone'] .editor-bar .icon-btn {
+  width: 40px;
+  height: 40px;
+}
+
+html[data-viewport='phone'] .editor-sheet {
+  padding: 8px 18px 30vh;
+}
+
+html[data-viewport='phone'] .note-title {
+  font-size: 24px;
+}
+
+html[data-viewport='phone'] .note-meta {
+  flex-wrap: wrap;
+  row-gap: 4px;
+}
+
+/* 查找条：工具栏在底部了，它贴顶铺满 */
+html[data-viewport='phone'] .findbar {
+  top: 8px;
+  left: 8px;
+  right: 8px;
+}
+
+html[data-viewport='phone'] .findbar-row {
+  flex-wrap: wrap;
+}
+
+html[data-viewport='phone'] .findbar-input {
+  width: auto;
+  flex: 1;
+  min-width: 0;
+}
+
+/* ---------- 触屏 ---------- */
+/* 没有 hover，目录树行上的按钮必须常显；和桌面 hover 态一样把计数挤掉 */
+html[data-touch] .tree-actions {
+  opacity: 1;
+}
+
+html[data-touch] .tree-row .tree-count {
+  display: none;
+}
+
+html[data-touch] .tree-actions .icon-btn {
+  width: 32px;
+  height: 32px;
+}
+
+/* 取色板拖动时别把页面一起滚了 */
+html[data-touch] .spectrum-sv,
+html[data-touch] .spectrum-hue,
+html[data-touch] .spectrum-alpha {
+  touch-action: none;
+}
