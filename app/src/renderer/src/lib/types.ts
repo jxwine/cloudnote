@@ -131,11 +131,12 @@ declare global {
       /** 安卓壳里装了的插件；只用到这两个，按需声明 */
       Plugins?: {
         Filesystem?: {
+          /** encoding 留空表示 data 是 base64 的二进制 */
           writeFile(o: {
             path: string
             data: string
             directory: string
-            encoding: string
+            encoding?: string
             recursive?: boolean
           }): Promise<{ uri: string }>
           downloadFile(o: {

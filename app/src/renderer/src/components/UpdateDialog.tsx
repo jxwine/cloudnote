@@ -20,26 +20,53 @@ const cleanMessage = (err: unknown) =>
  * 安卓壳是第三条：Filesystem 插件下到缓存目录，再拉起系统安装页，剩下的交给系统。
  */
 
-/** 安卓：下 APK 到缓存目录，然后交给系统安装页。sha256 不校验——安卓自己会验签名 */
+/**
+ * 安卓：下 APK 到缓存目录，然后交给系统安装页。sha256 校验一并做了——顺手，反正整个文件都在手里。
+ *
+ * 下载走 WebView 自己的 fetch，不用 Filesystem.downloadFile：后者是原生 HttpURLConnection 另起一条连接，
+ * 真机上从线上下会 "Connection reset"（同一个地址浏览器里下得好好的）；fetch 和同步接口走同一条网络栈，
+ * 能同步就能下。3.7 MB 的包整个读进内存再 base64 写盘，可以接受。
+ */
 async function downloadAndInstallApk(info: UpdateInfo, onProgress: (received: number) => void) {
   const plugins = window.Capacitor?.Plugins
-  if (!plugins?.Filesystem?.downloadFile || !plugins.Installer) throw new Error('这个版本的安卓端不支持应用内更新')
-  const listener = await plugins.Filesystem.addListener('progress', (p) => onProgress(p.bytes))
-  try {
-    // 直接放缓存目录根下：downloadFile 不会替你建子目录（recursive 对它不生效，会 ENOENT）
-    const { path } = await plugins.Filesystem.downloadFile({
-      url: info.downloadUrl,
-      path: `cloudnote-${info.version}.apk`,
-      directory: 'CACHE',
-      progress: true,
-    })
-    if (!path) throw new Error('下载完成但没拿到文件路径')
-    onProgress(info.size)
-    await plugins.Installer.install({ path })
-  } finally {
-    void listener.remove()
+  if (!plugins?.Filesystem || !plugins.Installer) throw new Error('这个版本的安卓端不支持应用内更新')
+
+  const res = await fetch(info.downloadUrl, { cache: 'no-store' })
+  if (!res.ok || !res.body) throw new Error(`下载失败：HTTP ${res.status}`)
+  const reader = res.body.getReader()
+  const chunks: Uint8Array[] = []
+  let received = 0
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    chunks.push(value)
+    received += value.length
+    onProgress(received)
   }
+  const bytes = new Uint8Array(received)
+  let offset = 0
+  for (const c of chunks) {
+    bytes.set(c, offset)
+    offset += c.length
+  }
+  if (info.size && received !== info.size) throw new Error(`下载不完整：${received} / ${info.size} 字节`)
+  if (info.sha256 && crypto.subtle) {
+    const digest = await crypto.subtle.digest('SHA-256', bytes)
+    const hex = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('')
+    if (hex !== info.sha256) throw new Error('安装包校验失败，请重试')
+  }
+
+  // 分块转 base64：一次 String.fromCharCode(...几百万个参数) 会炸栈
+  let bin = ''
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000))
+  const { uri } = await plugins.Filesystem.writeFile({
+    path: `cloudnote-${info.version}.apk`,
+    data: btoa(bin),
+    directory: 'CACHE',
+  })
+  await plugins.Installer.install({ path: uri })
 }
+
 export function UpdateDialog({ info, onClose }: { info: UpdateInfo; onClose: () => void }) {
   const [phase, setPhase] = useState<Phase>('idle')
   const [received, setReceived] = useState(0)
