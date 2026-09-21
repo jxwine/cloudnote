@@ -19,10 +19,12 @@ import { MobileShell } from './components/mobile/MobileShell'
 import { useSyncLifecycle } from '@/lib/useSyncLifecycle'
 import { desktop, isDesktop } from '@/lib/platform'
 import { isTouch, watchViewport } from '@/lib/viewport'
-import { checkUpdate, downloadClient, type UpdateInfo } from '@/lib/update'
+import { useUpdateCheck } from '@/lib/useUpdateCheck'
+import { DownloadLinks, IOS_ROUTE } from './components/DownloadLinks'
+import { IosInstallPage } from './components/IosInstallPage'
 import {
   IconCloud, IconPanelLeft, IconPanelRight, IconJump, IconTrash,
-  IconServer, IconDownload, IconSettings,
+  IconServer, IconSettings,
 } from './components/Icons'
 
 export default function App() {
@@ -39,6 +41,8 @@ export default function App() {
   useViewportAttr()
   const viewport = useStore((s) => s.viewport)
 
+  // iPhone 安装说明页：登录前后都能看，网页版专用
+  if (route === IOS_ROUTE && !isDesktop) return <IosInstallPage onBack={() => { location.hash = '' }} />
   if (!user) return <LoginView />
   // 后台只在网页端开放：它是运维用的，浏览器里开就行，没必要占客户端的入口。
   // 非管理员就算手敲了 #/admin 也进不去；服务端接口另有一道 403，这里只是不给看界面。
@@ -102,9 +106,16 @@ function useTheme() {
   useEffect(() => {
     document.documentElement.dataset.theme = theme
     // 手机浏览器的地址栏 / PWA 状态栏跟着应用内的配色走，别亮色界面配一条深色地址栏
+    const bg = theme === 'dark' ? '#17181b' : '#f1f2f0'
     document
       .querySelectorAll<HTMLMetaElement>('meta[name="theme-color"]')
-      .forEach((m) => { m.content = theme === 'dark' ? '#17181b' : '#f1f2f0' })
+      .forEach((m) => { m.content = bg })
+    // 安卓壳：状态栏图标颜色要跟着配色反过来，浅色界面配白色图标就看不见了
+    const statusBar = window.Capacitor?.Plugins?.StatusBar
+    if (statusBar) {
+      void statusBar.setStyle({ style: theme === 'dark' ? 'DARK' : 'LIGHT' }).catch(() => {})
+      void statusBar.setBackgroundColor({ color: bg }).catch(() => {})
+    }
   }, [theme])
 
   // 排版设置挂成 CSS 变量，app.css 里 .ProseMirror 读它们；登录页没有编辑器，挂上也无妨
@@ -127,6 +138,12 @@ function useViewportAttr() {
   useEffect(() => {
     const root = document.documentElement
     if (isTouch) root.dataset.touch = ''
+    // 安卓壳里 WebView 画到状态栏底下（这样状态栏那条的颜色永远和页面一致，深浅色切换不用等原生重建），
+    // 页面顶部要自己给状态栏让出高度：拿到高度挂成变量，CSS 里代替 env(safe-area-inset-top)
+    const statusBar = window.Capacitor?.Plugins?.StatusBar
+    if (statusBar) {
+      void statusBar.getInfo().then((i) => root.style.setProperty('--safe-top', `${i.height}px`)).catch(() => {})
+    }
     return watchViewport((v) => {
       setViewport(v)
       if (v === 'desktop') delete root.dataset.viewport
@@ -146,7 +163,6 @@ function Workspace() {
   const sidebarView = useStore((s) => s.sidebarView)
   const setSidebarView = useStore((s) => s.setSidebarView)
   const trashCount = useStore((s) => Object.values(s.notes).filter((n) => n.deleted).length)
-  const showToast = useStore((s) => s.showToast)
   const viewport = useStore((s) => s.viewport)
   const drawer = useStore((s) => s.drawer)
   const setDrawer = useStore((s) => s.setDrawer)
@@ -178,10 +194,7 @@ function Workspace() {
   const [editor, setEditor] = useState<Editor | null>(null)
   const [quickJump, setQuickJump] = useState(false)
   const [settings, setSettings] = useState(false)
-  /** 正在弹的更新框；关掉就没了 */
-  const [update, setUpdate] = useState<UpdateInfo | null>(null)
-  /** 查到过的新版本，关掉弹窗也记着——设置里的版本号旁边靠它显示红点 */
-  const [available, setAvailable] = useState<UpdateInfo | null>(null)
+  const { update, setUpdate, available, manualCheck } = useUpdateCheck()
   const scrollRef = useRef<HTMLDivElement>(null)
 
   const onEditorReady = useCallback((e: Editor | null) => setEditor(e), [])
@@ -210,33 +223,6 @@ function Workspace() {
     return () => window.removeEventListener('keydown', onKey)
   }, [toggleSide])
 
-  /* 更新检查：登录后过 8 秒静默查一次，之后每 6 小时一次。
-     查不到或者出错都不打扰用户——这个功能失败了不该弹窗。 */
-  useEffect(() => {
-    if (!isDesktop) return
-    let alive = true
-    const run = () =>
-      void checkUpdate().then((info) => {
-        if (!alive) return
-        setAvailable(info)
-        if (info) setUpdate(info)
-      })
-    const first = setTimeout(run, 8_000)
-    const timer = setInterval(run, 6 * 60 * 60 * 1000)
-    return () => {
-      alive = false
-      clearTimeout(first)
-      clearInterval(timer)
-    }
-  }, [])
-
-  /** 设置里手动点的那次：查不到也要给个回应，不然像是没反应 */
-  const manualCheck = async () => {
-    const info = await checkUpdate()
-    setAvailable(info)
-    if (info) setUpdate(info)
-    else showToast({ message: '已经是最新版本' })
-  }
 
   return (
     <div className="app">
@@ -279,11 +265,7 @@ function Workspace() {
           <IconJump />
         </button>
         {/* 下面两个只在网页版出现：客户端里下载自己没意义，后台是运维用的，浏览器开就行 */}
-        {!isDesktop && (
-          <button className="icon-btn" title="下载 Windows 客户端" onClick={() => void downloadClient()}>
-            <IconDownload />
-          </button>
-        )}
+        {!isDesktop && <DownloadLinks variant="icons" />}
         {!isDesktop && user?.isAdmin && (
           <button className="icon-btn" title="后台管理" onClick={() => { location.hash = '#/admin' }}>
             <IconServer />

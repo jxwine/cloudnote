@@ -66,7 +66,7 @@ cd app && npm run typecheck
 
 ```bash
 npm run server        # 另开一个终端
-npm test              # 71 项
+npm test              # 76 项
 ```
 
 后台管理相关的那几项需要服务端认得出管理员，否则会整段跳过并打印提示：
@@ -93,6 +93,7 @@ Chrome 不在默认位置的话用 `CHROME_PATH=... ` 指过去。
 只想复跑一个场景：`ONLY=三台 npm run test:sync -- --headless`（按标题子串过滤）。
 
 改了 `app.css` 末尾的响应式段落、`components/mobile/`（手机外壳）、`App.tsx` 的平板抽屉逻辑或 `lib/viewport.ts`，跑这个：
+（安卓端就是这份网页产物装进 Capacitor 壳，`android/` 目录里只有壳；网页改完 `npm --prefix android run build && npm --prefix android run apk` 重新出包，README「安卓端」一节有环境要求。）
 
 ```bash
 npm --prefix app run test:responsive -- --headless

@@ -2,16 +2,51 @@ import { htmlToMarkdown, noteToMarkdownFile, safeFileName } from './markdown'
 import { folderPath } from './search'
 import { useStore } from './store'
 import type { Folder, Note } from './types'
-import { isDesktop, desktop } from './platform'
+import { isDesktop, desktop, isNative } from './platform'
 
-/** 浏览器里没有 Electron 的保存对话框，退回到普通下载 */
+/**
+ * 浏览器里没有 Electron 的保存对话框，退回到普通下载。
+ * 安卓壳的 WebView 下不了 blob:，改走系统分享（Web Share API 带文件），
+ * 用户自己挑存到网盘、发到微信还是「保存到文件」。
+ */
 function browserDownload(name: string, content: string) {
+  if (isNative) {
+    void nativeShare(name, content)
+    return
+  }
   const url = URL.createObjectURL(new Blob([content], { type: 'text/markdown;charset=utf-8' }))
   const a = document.createElement('a')
   a.href = url
   a.download = name
   a.click()
   setTimeout(() => URL.revokeObjectURL(url), 1000)
+}
+
+/**
+ * 安卓壳：先把文件写进 App 的缓存目录，再拉起系统分享面板。
+ * 插件走 window.Capacitor.Plugins 的全局，不 import @capacitor/*——那些包只装在 android/ 里，
+ * 网页版 / 桌面端的构建不该为它多一个依赖。
+ */
+async function nativeShare(name: string, content: string) {
+  const plugins = window.Capacitor?.Plugins
+  const store = useStore.getState()
+  if (!plugins?.Filesystem || !plugins?.Share) {
+    store.showToast({ message: '这个版本的安卓端还不支持导出' })
+    return
+  }
+  try {
+    const { uri } = await plugins.Filesystem.writeFile({
+      path: `export/${name}`,
+      data: content,
+      directory: 'CACHE',
+      encoding: 'utf8',
+      recursive: true,
+    })
+    // 用户取消分享会 reject，不算错
+    await plugins.Share.share({ title: name, files: [uri] }).catch(() => {})
+  } catch (e) {
+    store.showToast({ message: '导出失败：' + (e instanceof Error ? e.message : String(e)) })
+  }
 }
 
 /** 导出单篇 */

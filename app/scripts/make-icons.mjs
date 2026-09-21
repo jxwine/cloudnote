@@ -9,8 +9,10 @@
  * 产物提交进仓库，改图标时重跑一次即可：
  *   icons/icon-192.png / icon-512.png   manifest 用，圆角外面透明
  *   icons/apple-touch-icon.png          iOS 用，180px、整张铺满不留透明（iOS 自己切圆角，透明处会垫成黑色）
+ *   ../android/resources/icon.png       安卓壳的源图，1024px 铺满（@capacitor/assets 再切各密度 + 自适应图标）
+ *   ../android/resources/splash.png     启动图 2732px：品牌色底 + 中间一朵云
  */
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync, copyFileSync, statSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, copyFileSync, statSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { join, dirname, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -37,20 +39,30 @@ if (!chrome) {
 const work = mkdtempSync(join(tmpdir(), 'cloudnote-icons-'))
 const profile = join(work, 'profile')
 
+const androidRes = resolve(here, '../../android/resources')
+
 /**
- * @param {string} name 输出文件名
+ * @param {string} name 输出文件名（含相对目录时写到那里）
  * @param {number} size 边长
- * @param {boolean} bleed true 就把圆角铺成直角、整张填满品牌色（apple-touch-icon 用）
+ * @param {'round'|'bleed'|'splash'} kind round 圆角透明底；bleed 直角铺满；splash 大底色中间一朵小云
  */
-function render(name, size, bleed) {
-  const body = bleed ? svg.replace(/rx="\d+"/, 'rx="0"') : svg
+function render(name, size, kind) {
+  let body
+  if (kind === 'splash') {
+    // 云只占中间 22%，启动图各种屏幕比例裁切都不会切到它
+    body = `<div style="width:${size}px;height:${size}px;background:#14706a;display:flex;align-items:center;justify-content:center">
+      <div style="width:${Math.round(size * 0.32)}px;height:${Math.round(size * 0.32)}px">${svg.replace(/<rect[^>]*\/>/, '')}</div></div>`
+  } else {
+    body = kind === 'bleed' ? svg.replace(/rx="\d+"/, 'rx="0"') : svg
+  }
   const html = `<!doctype html><html><head><meta charset="utf-8"><style>
     html,body{margin:0;padding:0;background:transparent;overflow:hidden}
-    svg{display:block;width:${size}px;height:${size}px}
+    svg{display:block;width:100%;height:100%}
+    body>svg{width:${size}px;height:${size}px}
   </style></head><body>${body}</body></html>`
-  const page = join(work, `${name}.html`)
+  const page = join(work, `${name.replace('/', '-')}.html`)
   writeFileSync(page, html)
-  const out = join(work, name)
+  const out = join(work, name.replace('/', '-'))
   const r = spawnSync(
     chrome,
     [
@@ -81,14 +93,18 @@ function render(name, size, bleed) {
     last = size
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 200)
   }
-  copyFileSync(out, join(iconsDir, name))
-  console.log('生成', join('icons', name), `${size}×${size}`)
+  const dest = name.startsWith('android/') ? join(androidRes, name.slice('android/'.length)) : join(iconsDir, name)
+  mkdirSync(dirname(dest), { recursive: true })
+  copyFileSync(out, dest)
+  console.log('生成', name, `${size}×${size}`)
 }
 
 try {
-  render('icon-192.png', 192, false)
-  render('icon-512.png', 512, false)
-  render('apple-touch-icon.png', 180, true)
+  render('icon-192.png', 192, 'round')
+  render('icon-512.png', 512, 'round')
+  render('apple-touch-icon.png', 180, 'bleed')
+  render('android/icon.png', 1024, 'bleed')
+  render('android/splash.png', 2732, 'splash')
 } finally {
   rmSync(work, { recursive: true, force: true })
 }

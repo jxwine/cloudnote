@@ -1,6 +1,6 @@
 {
   "name": "cloudnote",
-  "version": "1.2.1",
+  "version": "1.2.3",
   "private": true,
   "description": "云笔记 — 简洁优雅的多端同步笔记",
   "author": "cloudnote",
@@ -33,6 +33,7 @@
     "@tiptap/pm": "^3.0.0",
     "@tiptap/react": "^3.0.0",
     "@tiptap/starter-kit": "^3.0.0",
+    "@types/qrcode": "^1.5.6",
     "@types/react": "^18.3.17",
     "@types/react-dom": "^18.3.5",
     "@vitejs/plugin-react": "^4.3.4",
@@ -40,6 +41,7 @@
     "electron-builder": "^25.1.8",
     "electron-vite": "^2.3.0",
     "lowlight": "^3.3.0",
+    "qrcode": "^1.5.4",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "typescript": "^5.7.2",

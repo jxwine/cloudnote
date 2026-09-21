@@ -1,0 +1,25 @@
+{
+  "name": "cloudnote-android",
+  "version": "1.0.0",
+  "private": true,
+  "description": "云笔记安卓端：Capacitor 壳 + 网页版手机档的构建产物",
+  "scripts": {
+    "build": "node scripts/build-www.mjs && cap sync android",
+    "apk:debug": "cd android && gradlew.bat assembleDebug",
+    "apk": "cd android && gradlew.bat assembleRelease && cd .. && node scripts/collect-apk.mjs",
+    "assets": "capacitor-assets generate --android --iconBackgroundColor #14706a --iconBackgroundColorDark #14706a --splashBackgroundColor #14706a --splashBackgroundColorDark #14706a"
+  },
+  "dependencies": {
+    "@capacitor/android": "^7.0.0",
+    "@capacitor/app": "^7.0.0",
+    "@capacitor/core": "^7.0.0",
+    "@capacitor/filesystem": "^7.1.8",
+    "@capacitor/share": "^7.0.4",
+    "@capacitor/status-bar": "^7.0.6"
+  },
+  "devDependencies": {
+    "@capacitor/assets": "^3.0.5",
+    "@capacitor/cli": "^7.0.0",
+    "typescript": "^5.9.3"
+  }
+}

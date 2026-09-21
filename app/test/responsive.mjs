@@ -118,7 +118,7 @@ const measure = (dev) =>
         (el) => el.getBoundingClientRect().right > innerWidth + 0.5
       ),
       findBtn: !!document.querySelector('.editor-bar [title^="查找替换"]'),
-      download: !!document.querySelector('.titlebar [title^="下载"]'),
+      download: !!document.querySelector('.titlebar .dl-group'),
     }
   })
 

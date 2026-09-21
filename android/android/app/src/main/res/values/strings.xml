@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">云笔记</string>
+    <string name="title_activity_main">云笔记</string>
+    <string name="package_name">com.cloudnote.app</string>
+    <string name="custom_url_scheme">com.cloudnote.app</string>
+</resources>

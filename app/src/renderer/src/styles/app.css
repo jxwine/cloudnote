@@ -1122,6 +1122,7 @@ textarea {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  text-decoration: none;
   height: 30px;
   padding: 0 10px;
   border-radius: 7px;
@@ -1201,7 +1202,8 @@ textarea {
   color: var(--text-2);
 }
 
-.field input {
+.field input,
+.field select {
   width: 100%;
   height: 36px;
   padding: 0 11px;
@@ -1213,7 +1215,8 @@ textarea {
   transition: border-color 0.15s, box-shadow 0.15s;
 }
 
-.field input:focus {
+.field input:focus,
+.field select:focus {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-soft);
 }
@@ -2833,6 +2836,12 @@ body.is-reflowing .bubble-bar {
   color: var(--accent);
 }
 
+.admin-tag.is-android {
+  margin-left: 6px;
+  background: color-mix(in srgb, var(--warn) 14%, transparent);
+  color: var(--warn);
+}
+
 .admin-tag.is-off {
   background: var(--danger-soft);
   color: var(--danger);
@@ -2947,7 +2956,7 @@ body.is-reflowing .bubble-bar {
 
 .admin-upload-grid {
   display: grid;
-  grid-template-columns: 220px;
+  grid-template-columns: 220px 160px;
   gap: 14px;
 }
 .admin-upload textarea {
@@ -3339,6 +3348,376 @@ body.is-reflowing .bubble-bar {
 }
 
 
+/* ============================ 下载客户端入口 ============================ */
+
+/* 登录页 / 关于页：并排的平台方块 */
+.dl-tiles {
+  display: flex;
+  gap: 10px;
+}
+
+.dl-tile {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 12px 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--raised);
+  color: var(--text);
+  text-decoration: none;
+  font: inherit;
+  cursor: pointer;
+  transition: border-color 0.15s var(--ease), background 0.15s var(--ease), transform 0.1s;
+}
+
+.dl-tile:hover {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.dl-tile:active {
+  transform: scale(0.98);
+}
+
+.dl-tile-label {
+  font-size: 12px;
+  color: var(--text-2);
+  white-space: nowrap;
+}
+
+.dl-tile:hover .dl-tile-label {
+  color: var(--accent);
+}
+
+.auth-downloads {
+  margin-top: 16px;
+}
+
+/* 顶栏：三个图标挤成一组，一眼看出是同一类东西 */
+.dl-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 8px;
+  border: 1px solid var(--line-soft);
+}
+
+.dl-icon {
+  width: 26px;
+  height: 26px;
+  text-decoration: none;
+}
+
+/* 关于页里的方块小一号 */
+.settings-row .dl-tiles {
+  gap: 8px;
+}
+
+.settings-row .dl-tile {
+  flex: 0 0 auto;
+  width: 72px;
+  padding: 9px 4px 8px;
+}
+
+/* ============================ iPhone 安装页 ============================ */
+
+.ios-page {
+  height: 100%;
+  overflow-y: auto;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.ios-top {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: var(--titlebar-h);
+  padding: var(--safe-top, env(safe-area-inset-top, 0px)) 12px 0;
+  box-sizing: content-box;
+  background: var(--bg);
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.ios-main {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 28px 20px calc(60px + env(safe-area-inset-bottom, 0px));
+}
+
+.ios-hero {
+  text-align: center;
+  padding-bottom: 28px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.ios-hero-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 60px;
+  height: 60px;
+  border-radius: 18px;
+  background: var(--raised);
+  border: 1px solid var(--line);
+  color: var(--text);
+}
+
+.ios-hero h1 {
+  margin: 16px 0 8px;
+  font-size: 24px;
+  font-weight: 650;
+  letter-spacing: -0.015em;
+}
+
+.ios-hero p {
+  margin: 0 auto;
+  max-width: 480px;
+  font-size: 14px;
+  line-height: 1.7;
+  color: var(--text-2);
+}
+
+.ios-cta {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 22px;
+  height: 46px;
+  padding: 0 26px;
+  font-size: 16px;
+  border-radius: 12px;
+  text-decoration: none;
+}
+
+.ios-done {
+  display: inline-block;
+  margin-top: 20px;
+  padding: 10px 16px;
+  border-radius: 10px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 14px;
+}
+
+/* 电脑上：二维码 + 网址 */
+.ios-qr {
+  display: flex;
+  align-items: center;
+  gap: 22px;
+  margin: 24px auto 0;
+  padding: 16px;
+  max-width: 520px;
+  text-align: left;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--raised);
+}
+
+.ios-qr-img {
+  flex: 0 0 auto;
+  width: 132px;
+  height: 132px;
+  padding: 6px;
+  border-radius: 10px;
+  background: #fff;
+}
+
+.ios-qr-img svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.ios-qr-img.is-empty {
+  background: var(--hover);
+}
+
+.ios-qr-text {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  font-size: 13px;
+  color: var(--text-2);
+  line-height: 1.6;
+}
+
+.ios-qr-text b {
+  color: var(--text);
+  font-size: 14px;
+}
+
+.ios-url {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.ios-url code {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 5px 8px;
+  border-radius: 6px;
+  background: var(--hover);
+  font-size: 12px;
+  color: var(--text);
+}
+
+/* 步骤 */
+.ios-steps {
+  list-style: none;
+  margin: 0;
+  padding: 8px 0 0;
+}
+
+.ios-step {
+  display: flex;
+  align-items: center;
+  gap: 28px;
+  padding: 26px 0;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.ios-step:nth-child(even) {
+  flex-direction: row-reverse;
+}
+
+.ios-step-art {
+  flex: 0 0 200px;
+}
+
+.ios-art {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.ios-step-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.ios-step-n {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.ios-step-text h3 {
+  margin: 10px 0 8px;
+  font-size: 17px;
+  font-weight: 620;
+  line-height: 1.4;
+}
+
+.ios-step-text p {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.75;
+  color: var(--text-2);
+}
+
+.ios-faq {
+  padding-top: 26px;
+}
+
+.ios-faq h2 {
+  margin: 0 0 12px;
+  font-size: 16px;
+  font-weight: 620;
+}
+
+.ios-faq dl {
+  margin: 0;
+}
+
+.ios-faq dt {
+  margin-top: 14px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.ios-faq dd {
+  margin: 4px 0 0;
+  font-size: 13.5px;
+  line-height: 1.7;
+  color: var(--text-2);
+}
+
+/* 图示的配色全走变量，深浅色都对 */
+.art-phone { fill: var(--text); opacity: 0.9; }
+.art-screen { fill: var(--bg); }
+.art-notch { fill: var(--text); opacity: 0.85; }
+.art-chip { fill: var(--hover); }
+.art-card { fill: var(--raised); stroke: var(--line); stroke-width: 1; }
+.art-card.hot { fill: var(--accent-soft); stroke: var(--accent-line); }
+.art-dialog { fill: var(--raised); stroke: var(--line); stroke-width: 1; }
+.art-dim { fill: rgba(18, 20, 24, 0.35); }
+.art-field { fill: var(--raised); stroke: var(--line); stroke-width: 1; }
+.art-line { fill: var(--line); }
+.art-line.strong { fill: var(--text-3); }
+.art-icon { fill: var(--line); }
+.art-avatar { fill: var(--text-3); }
+.art-accent { fill: var(--accent); }
+.art-cloud { fill: none; stroke: #fff; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
+.art-sep { stroke: var(--line-soft); stroke-width: 1; }
+.art-ring { fill: none; stroke: var(--accent); stroke-width: 2.5; stroke-dasharray: 4 3; }
+.art-title { fill: var(--text); font-size: 15px; font-weight: 650; font-family: var(--font-ui); }
+.art-text { fill: var(--text); font-size: 10px; font-family: var(--font-ui); }
+.art-text.strong { font-weight: 600; }
+.art-text.muted { fill: var(--text-3); }
+.art-text.accent { fill: var(--accent); font-weight: 600; }
+.art-text.warn { fill: var(--warn); font-weight: 600; }
+.art-text.small { font-size: 8.5px; }
+
+/* 窄屏：步骤上下排，二维码块纵向。这页只在网页版出现（App.tsx 按 !isDesktop 路由），裸 @media 碰不到桌面端 */
+@media (max-width: 560px) {
+  .ios-step,
+  .ios-step:nth-child(even) {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 14px;
+    padding: 22px 0;
+  }
+  .ios-step-art {
+    flex: 0 0 auto;
+    max-width: 200px;
+    margin: 0 auto;
+  }
+  .ios-qr {
+    flex-direction: column;
+    text-align: center;
+  }
+  .ios-qr-text {
+    align-items: center;
+  }
+  .ios-url {
+    width: 100%;
+  }
+}
+
 /* ============================ 响应式（仅网页版） ============================
  *
  * 这一节的每条规则都以 html[data-viewport…] 或 html[data-touch] 开头，
@@ -3442,7 +3821,9 @@ html[data-viewport] * {
 /* ---------- 手机：通用 ---------- */
 html[data-viewport='phone'] {
   /* 刘海屏：顶栏往下让出状态栏。overlay 的 top 也读这个变量 */
-  --titlebar-h: calc(48px + env(safe-area-inset-top, 0px));
+  /* --safe-top 由安卓壳挂上（状态栏高度）；浏览器里没有它，退回刘海屏的 env() */
+  --safe-top: env(safe-area-inset-top, 0px);
+  --titlebar-h: calc(48px + var(--safe-top));
 }
 
 /* 输入类控件一律 ≥16px——iOS 在更小的输入框聚焦时会把整页放大 */
@@ -3549,7 +3930,7 @@ html[data-viewport='phone'] .menu {
   align-items: center;
   gap: 4px;
   height: var(--titlebar-h);
-  padding: env(safe-area-inset-top, 0px) 8px 0;
+  padding: var(--safe-top) 8px 0;
   box-sizing: border-box;
 }
 

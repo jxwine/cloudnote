@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { session } from '@/lib/api'
-import { isDesktop, desktop } from '@/lib/platform'
+import { isDesktop, desktop, isNative } from '@/lib/platform'
+import { DownloadLinks } from './DownloadLinks'
 import { isTouch } from '@/lib/viewport'
 import { useStore, useBindings, TYPOGRAPHY, type ThemeMode } from '@/lib/store'
 import {
@@ -12,7 +13,6 @@ import {
   type ShortcutId,
 } from '@/lib/shortcuts'
 import * as sync from '@/lib/sync'
-import { downloadClient } from '@/lib/update'
 import { PasswordDialog } from './PasswordDialog'
 import { IconClose } from './Icons'
 
@@ -297,20 +297,32 @@ export function SettingsDialog({ onClose, onCheckUpdate, newVersion }: Props) {
                           </span>
                         )}
                       </>
+                    ) : isNative ? (
+                      <>
+                        安卓版 {__APP_VERSION__}
+                        {newVersion && (
+                          <span className="update-dot" title={`有新版本 ${newVersion}`}>
+                            <i />
+                            可更新到 {newVersion}
+                          </span>
+                        )}
+                      </>
                     ) : (
-                      '网页版'
+                      `网页版 ${__APP_VERSION__}`
                     )
                   }
                 >
-                  {isDesktop ? (
+                  {/* 网页版没有更新这回事，刷新就是最新的；桌面端和安卓端才查通道 */}
+                  {(isDesktop || isNative) && (
                     <button className="btn-ghost" onClick={onCheckUpdate}>
                       检查更新
                     </button>
-                  ) : (
-                    <button className="btn-ghost" onClick={() => void downloadClient()}>
-                      下载 Windows 客户端
-                    </button>
                   )}
+                </Row>
+              )}
+              {section === 'about' && !isDesktop && !isNative && (
+                <Row title="下载客户端" hint="在其它设备上用，数据实时同步">
+                  <DownloadLinks variant="tiles" />
                 </Row>
               )}
             </div>

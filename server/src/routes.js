@@ -6,6 +6,7 @@ import {
 import { broadcast, peerCount, kick, onlineCount, onlineStats } from './hub.js'
 import { saveDataUrl, readUpload, uploadsRoot } from './uploads.js'
 import { saveStream, readRelease, removeRelease } from './releases.js'
+import { buildWebClipProfile } from './webclip.js'
 import { allowAuth, bumpAuth, resetAuth, uploadLimiter } from './guard.js'
 import { rmSync } from 'node:fs'
 import { join } from 'node:path'
@@ -207,11 +208,34 @@ export default async function routes(app) {
       .send(file.stream)
   })
 
+  /**
+   * iOS「安装到主屏幕」的描述文件。不鉴权：登录页上就要能点。
+   * 站点域名从请求头取——网页版和接口同域，nginx 把 host / x-forwarded-proto 都转过来了。
+   */
+  app.get('/api/ios.mobileconfig', async (req, reply) => {
+    const proto = String(req.headers['x-forwarded-proto'] || req.protocol || 'https').split(',')[0].trim()
+    const host = String(req.headers['x-forwarded-host'] || req.headers.host || '').split(',')[0].trim()
+    if (!host) throw httpError(400, '拿不到站点域名')
+    return reply
+      .type('application/x-apple-aspen-config; charset=utf-8')
+      .header('content-disposition', 'attachment; filename="cloudnote.mobileconfig"')
+      .send(buildWebClipProfile(`${proto}://${host}`))
+  })
+
   /* ================= 客户端发布包 ================= */
   /**
    * 这两个接口都不鉴权：新用户还没有账号就得先能下到客户端，
    * 桌面端也要在登录之前就能检查更新。
    */
+  /**
+   * 客户端发布通道。win32 是 Windows 整包（.exe），win32-asar 是 Windows 热更新（.asar），
+   * android 是 APK。各端检查更新只看自己的通道，互不干扰。
+   */
+  const PLATFORMS = new Set(['win32', 'win32-asar', 'android'])
+  // 下载时按扩展名给 content-type：安卓浏览器认到 apk 类型才会直接走安装，其余照旧当二进制
+  const contentTypeFor = (filename) =>
+    /\.apk$/i.test(filename) ? 'application/vnd.android.package-archive' : 'application/octet-stream'
+
   app.get('/api/update/latest', async (req) => {
     const platform = String(req.query?.platform || 'win32')
     const row = Q.latestRelease.get(platform)
@@ -224,7 +248,7 @@ export default async function routes(app) {
     const file = readRelease(req.params.id, req.params.filename)
     if (!file) return reply.code(404).send({ error: '安装包不存在' })
     return reply
-      .type('application/octet-stream')
+      .type(contentTypeFor(row.filename))
       // 文件名带中文，用 RFC 5987 的写法，浏览器才不会存成乱码
       .header('content-disposition',
         `attachment; filename*=UTF-8''${encodeURIComponent(row.filename)}`)
@@ -521,6 +545,7 @@ export default async function routes(app) {
       const notes = decodeURIComponent(String(req.headers['x-notes'] || ''))
 
       if (!/^\d+\.\d+\.\d+/.test(version)) throw httpError(400, '版本号要形如 1.2.0')
+      if (!PLATFORMS.has(platform)) throw httpError(400, `不认识的客户端类型：${platform}`)
       if (!filename) throw httpError(400, '缺少文件名')
       if (Q.findVersion.get(version, platform))
         throw httpError(409, `版本 ${version} 已经存在，请先删除旧的那条`)

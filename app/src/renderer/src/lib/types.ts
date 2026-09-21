@@ -120,7 +120,47 @@ export interface AdminStats {
 }
 
 declare global {
+  /** 构建时注入的 app/package.json 版本号（electron.vite.config.ts 的 define） */
+  const __APP_VERSION__: string
+
   interface Window {
+    /** Capacitor 安卓壳注入的全局；网页版和桌面端没有 */
+    Capacitor?: {
+      isNativePlatform?: () => boolean
+      getPlatform?: () => string
+      /** 安卓壳里装了的插件；只用到这两个，按需声明 */
+      Plugins?: {
+        Filesystem?: {
+          writeFile(o: {
+            path: string
+            data: string
+            directory: string
+            encoding: string
+            recursive?: boolean
+          }): Promise<{ uri: string }>
+          downloadFile(o: {
+            url: string
+            path: string
+            directory: string
+            progress?: boolean
+          }): Promise<{ path?: string; blob?: unknown }>
+          addListener(
+            event: 'progress',
+            fn: (p: { url: string; bytes: number; contentLength: number }) => void
+          ): Promise<{ remove(): Promise<void> }>
+        }
+        /** 我们自己写的原生插件（android/…/InstallerPlugin.java）：拉起系统安装页 */
+        Installer?: { install(o: { path: string }): Promise<void> }
+        Share?: { share(o: { title?: string; text?: string; files?: string[] }): Promise<unknown> }
+        StatusBar?: {
+          /** LIGHT = 浅色底配深色图标，DARK 反之 */
+          setStyle(o: { style: 'LIGHT' | 'DARK' }): Promise<void>
+          setBackgroundColor(o: { color: string }): Promise<void>
+          /** height 是 CSS 像素 */
+          getInfo(): Promise<{ visible: boolean; height: number }>
+        }
+      }
+    }
     cloudnote?: {
       info(): Promise<{
         version: string

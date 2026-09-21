@@ -1,12 +1,18 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, uploadRelease } from '@/lib/api'
 import { useStore } from '@/lib/store'
-import { formatBytes, HOT_PLATFORM } from '@/lib/update'
+import { formatBytes, PLATFORMS, platformFromFilename, type Platform } from '@/lib/update'
 import type { Release } from '@/lib/types'
 import { IconUpload } from '../Icons'
 
 /** 从 electron-builder 的产物名里猜版本号：「云笔记 Setup 1.2.0.exe」→ 1.2.0 */
 const guessVersion = (filename: string) => /(\d+\.\d+\.\d+)/.exec(filename)?.[1] ?? ''
+
+/** 列表副标题：认识的通道给说明，老数据里的怪值原样显示 */
+const platformHint = (platform: string) =>
+  platform in PLATFORMS ? PLATFORMS[platform as Platform].hint : platform
+
+const ACCEPT = Object.values(PLATFORMS).map((p) => p.ext).join(',')
 
 const fmtDate = (t: number) => {
   const d = new Date(t)
@@ -81,9 +87,10 @@ export function AdminReleases() {
                   <div className="admin-user">
                     <span className="admin-user-name">
                       {r.version}
-                      {r.platform === HOT_PLATFORM && <span className="admin-tag is-hot">热更新</span>}
+                      {r.platform === 'win32-asar' && <span className="admin-tag is-hot">热更新</span>}
+                      {r.platform === 'android' && <span className="admin-tag is-android">安卓</span>}
                     </span>
-                    <span className="admin-user-mail">{r.platform === HOT_PLATFORM ? '仅换代码，重启生效' : r.platform}</span>
+                    <span className="admin-user-mail">{platformHint(r.platform)}</span>
                   </div>
                 </td>
                 <td className="admin-file">
@@ -129,6 +136,9 @@ export function AdminReleases() {
           热更新包（.asar，约 2 MB）和安装包（.exe）是两条独立的通道，各自取最新一条；
           客户端优先走热更新，只有热更新给不了（Electron 大版本变了、或者装的是没有热更新能力的老版本）
           才提示下载安装包。平时发版两个都传：<code>npm run dist</code> 会一起打出来。
+          <br />
+          安卓包（.apk）是第三条通道：安卓端只看它，网页登录页的「下载安卓端」也从这里取；
+          <code>npm --prefix android run apk</code> 打出来。
         </p>
       )}
     </div>
@@ -137,6 +147,8 @@ export function AdminReleases() {
 
 function UploadForm({ onDone }: { onDone: () => void }) {
   const [file, setFile] = useState<File | null>(null)
+  /** 客户端类型：选文件时按扩展名预填，认不出就留空让人自己选 */
+  const [platform, setPlatform] = useState<Platform | ''>('')
   const [version, setVersion] = useState('')
   const [notes, setNotes] = useState('')
   const [sent, setSent] = useState(0)
@@ -148,12 +160,13 @@ function UploadForm({ onDone }: { onDone: () => void }) {
   const [dragging, setDragging] = useState(false)
 
   const pick = (f: File | null) => {
-    if (f && !/\.(exe|asar)$/i.test(f.name)) {
-      setError(`只能上传 .exe 安装包或 .asar 热更新包，这个是「${f.name}」`)
+    if (f && !platformFromFilename(f.name)) {
+      setError(`只能上传 ${ACCEPT.replace(/,/g, ' / ')}，这个是「${f.name}」`)
       return
     }
     setFile(f)
     setError('')
+    if (f) setPlatform(platformFromFilename(f.name) ?? '')
     // 版本号能从文件名猜出来就填上，猜不出来让人自己写
     if (f && !version) setVersion(guessVersion(f.name))
   }
@@ -186,16 +199,16 @@ function UploadForm({ onDone }: { onDone: () => void }) {
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (busy || !file) return
+    if (busy || !file || !platform) return
     setBusy(true)
     setError('')
     setSent(0)
     try {
-      // 热更新包走自己的通道，和整包互不覆盖
-      const platform = /\.asar$/i.test(file.name) ? HOT_PLATFORM : 'win32'
+      // 三条通道各自独立，互不覆盖
       const r = await uploadRelease(file, { version: version.trim(), notes, platform }, (s) => setSent(s))
-      showToast({ message: `${r.version}${platform === HOT_PLATFORM ? ' 热更新' : ''} 已发布，客户端下次检查更新就能看到` })
+      showToast({ message: `${PLATFORMS[platform].label} ${r.version} 已发布，客户端下次检查更新就能看到` })
       setFile(null)
+      setPlatform('')
       setVersion('')
       setNotes('')
       if (inputRef.current) inputRef.current.value = ''
@@ -241,7 +254,7 @@ function UploadForm({ onDone }: { onDone: () => void }) {
           id="rel-file"
           ref={inputRef}
           type="file"
-          accept=".exe,.asar"
+          accept={ACCEPT}
           hidden
           disabled={busy}
           onChange={(e) => pick(e.target.files?.[0] ?? null)}
@@ -254,13 +267,29 @@ function UploadForm({ onDone }: { onDone: () => void }) {
           </>
         ) : (
           <>
-            <b className="admin-drop-name">把安装包或热更新包拖到这里</b>
-            <span className="admin-drop-hint">或者点一下选择文件 · .exe 是整包，.asar 是热更新</span>
+            <b className="admin-drop-name">把安装包拖到这里</b>
+            <span className="admin-drop-hint">或者点一下选择文件 · .exe 整包 / .asar 热更新 / .apk 安卓</span>
           </>
         )}
       </div>
 
       <div className="admin-upload-grid">
+        <div className="field">
+          <label htmlFor="rel-platform">客户端类型</label>
+          <select
+            id="rel-platform"
+            value={platform}
+            onChange={(e) => setPlatform(e.target.value as Platform | '')}
+            disabled={busy}
+          >
+            <option value="">选文件后自动识别</option>
+            {(Object.keys(PLATFORMS) as Platform[]).map((k) => (
+              <option key={k} value={k}>
+                {PLATFORMS[k].label}（{PLATFORMS[k].ext}）
+              </option>
+            ))}
+          </select>
+        </div>
         <div className="field">
           <label htmlFor="rel-version">版本号</label>
           <input
@@ -295,7 +324,7 @@ function UploadForm({ onDone }: { onDone: () => void }) {
 
       <div className="dialog-actions">
         <span className="dialog-spacer" />
-        <button type="submit" className="btn-primary" disabled={busy || !file || !version.trim()}>
+        <button type="submit" className="btn-primary" disabled={busy || !file || !platform || !version.trim()}>
           {busy ? '上传中…' : '发布'}
         </button>
       </div>

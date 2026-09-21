@@ -67,7 +67,7 @@ The suite is a plain script that talks real HTTP and WebSocket, so **start the s
 
 ```bash
 npm run server        # in another terminal
-npm test              # 71 checks
+npm test              # 76 checks
 ```
 
 The admin-related checks need the server to recognise an admin, otherwise that whole section is
@@ -80,6 +80,17 @@ npm test
 
 Tests isolate themselves with timestamped emails and **do not clean up**. Delete
 `server/data/cloudnote.db` if the leftovers bother you.
+
+### Sync and responsive regressions
+
+Touching `lib/sync.ts`, `lib/store.ts` or the save / title-settling parts of `Editor.tsx`? Run
+`npm run test:sync` (builds first, then drives real Chrome windows as separate devices; add
+`-- --headless` in CI, `ONLY=<title substring>` to rerun one scenario). Touching the responsive section at
+the end of `app.css`, `components/mobile/` or `lib/viewport.ts`? Run
+`npm --prefix app run test:responsive -- --headless` — it screenshots five widths and asserts geometry.
+All responsive rules are prefixed with `html[data-viewport]` / `html[data-touch]`, which only the web build
+sets; the desktop app must stay three-pane at any window width, so no bare `@media`. The Android app is
+this same web bundle inside a Capacitor shell (`android/`), rebuilt with `npm --prefix android run build && npm --prefix android run apk`.
 
 ### UI changes
 

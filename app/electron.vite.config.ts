@@ -1,6 +1,9 @@
 import { resolve } from 'node:path'
+import { readFileSync } from 'node:fs'
 import { defineConfig, externalizeDepsPlugin } from 'electron-vite'
 import react from '@vitejs/plugin-react'
+
+const { version } = JSON.parse(readFileSync(resolve(__dirname, 'package.json'), 'utf8')) as { version: string }
 
 export default defineConfig({
   main: {
@@ -25,5 +28,7 @@ export default defineConfig({
   renderer: {
     resolve: { alias: { '@': resolve(__dirname, 'src/renderer/src') } },
     plugins: [react()],
+    // 网页版 / 安卓版没有主进程可问，版本号在构建时写死进去；桌面端照旧问主进程
+    define: { __APP_VERSION__: JSON.stringify(version) },
   },
 })

@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 状态栏后面露出来的是窗口背景（Android 15 边到边后不能再给状态栏单独上色），
+         跟页面的 bg 变量保持一致；深色版在 values-night 里 -->
+    <color name="windowBackground">#F1F2F0</color>
+</resources>

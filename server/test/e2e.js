@@ -333,6 +333,40 @@ if (!adminMe?.user?.isAdmin) {
   ok((await fetch(BASE + latest.data.url)).status === 404, '下架后下载链接 404')
 
   ok((await api('DELETE', `/api/admin/releases/${rel.id}`, { token: adminToken })).status === 200, '删除版本')
+
+  /* 安卓通道：和 Windows 各走各的，下载时要给 apk 的 content-type */
+  const apkVersion = `9.8.${Date.now() % 1000}`
+  const upApk = await fetch(`${BASE}/api/admin/releases`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/octet-stream',
+      authorization: 'Bearer ' + adminToken,
+      'x-version': apkVersion,
+      'x-platform': 'android',
+      'x-filename': encodeURIComponent('云笔记 9.8.0.apk'),
+    },
+    body: blob,
+  })
+  const apk = await upApk.json()
+  ok(upApk.status === 200 && apk.platform === 'android', '安卓通道上传成功')
+  ok((await api('GET', '/api/update/latest?platform=android')).data.version === apkVersion, 'android 通道的 latest 是它')
+  ok((await api('GET', '/api/update/latest')).data.version !== apkVersion, 'win32 通道看不到安卓包')
+  const dlApk = await fetch(BASE + apk.url)
+  ok(dlApk.headers.get('content-type') === 'application/vnd.android.package-archive', 'apk 下载带安卓安装包的 content-type')
+  await api('DELETE', `/api/admin/releases/${apk.id}`, { token: adminToken })
+
+  const bad = await fetch(`${BASE}/api/admin/releases`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/octet-stream',
+      authorization: 'Bearer ' + adminToken,
+      'x-version': '9.7.0',
+      'x-platform': 'ios',
+      'x-filename': encodeURIComponent('x.ipa'),
+    },
+    body: blob,
+  })
+  ok(bad.status === 400, '不认识的客户端类型被拒绝')
 }
 
 dev1.ws.close(); dev2.ws.close()

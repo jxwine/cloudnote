@@ -2,7 +2,7 @@
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%E2%89%A524-brightgreen.svg)](https://nodejs.org/)
-[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Web-lightgrey.svg)](#)
+[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Web%20%7C%20Android-lightgrey.svg)](#)
 
 **English** | [简体中文](README.md)
 
@@ -29,12 +29,14 @@ No native modules, no external database, no third-party service.
 - **Self-updating**: the client finds new versions on its own, downloads in-app, verifies the sha256, launches the installer
 - **Web admin**: manage accounts and publish client builds; the web app also offers the installer for download
 - **Web version**: same frontend code, usable straight from a browser, live-synced with the desktop app; phones get a card-based home screen with a full-screen editor, tablets fold the outline into a drawer, and it can be added to the home screen
+- **Android app**: the web phone layout in a Capacitor shell, published through the admin panel with in-app updates; iPhones get a configuration-profile install to the home screen
 
 ## Tech stack
 
 | | |
 |---|---|
 | Desktop | Electron + electron-vite + React 18 + TypeScript |
+| Android | Capacitor 7 wrapping the web build's phone layout in a WebView shell — same bundle |
 | Editor | Tiptap 3 (ProseMirror) |
 | Server | Fastify 5 + `node:sqlite` (built into Node 24) + `@fastify/websocket` |
 | Sync | A monotonic per-note `version` for optimistic locking, a per-account `seq` cursor for incremental pull |
@@ -55,7 +57,7 @@ Run pieces separately:
 ```bash
 npm run server        # sync service only
 npm run app           # desktop client only
-npm test              # server end-to-end tests (71 of them)
+npm test              # server end-to-end tests (76 of them)
 npm run dist          # build the Windows installer into app/release
 ```
 
@@ -80,7 +82,12 @@ note/
         ├── lib/store.ts    Global state and local cache
         ├── lib/outline.ts  Heading extraction and scroll positioning
         ├── lib/images.ts   Image upload (paste / drop / file picker)
-        └── components/     The three-pane UI
+        └── components/     The three-pane UI + mobile/ (phone shell)
+└── android/          Android app: Capacitor shell, www/ comes from app/out/renderer
+    ├── capacitor.config.ts
+    ├── android/        Native project (gradle); MainActivity only adds keyboard inset handling
+    ├── scripts/        setup-sdk.ps1 installs the SDK, build-www.mjs prepares www/, collect-apk.mjs collects the APK
+    └── keystore/       Signing key (jks and passwords stay out of git — back them up)
 ```
 
 ## Folder tree
@@ -302,8 +309,80 @@ on the server, and an unsigned app has to disable signature verification on top 
 download is a block-level diff of the NSIS installer, which in practice saves far less than swapping
 the asar.
 
-The web version has none of this; instead the login page and the title bar offer
-"下载 Windows 客户端" (Download the Windows client).
+The web version has none of this; instead the login page, the title bar and Settings > About show a row
+of platform icons — Android / Windows / iPhone on a computer, only your own platform in a phone browser.
+Android and Windows only appear once that channel has a published build.
+
+### Three channels
+
+"Publish a version" in the admin panel picks the client type from the file extension (pre-selected in a
+dropdown, editable), and the server accepts exactly these:
+
+| Channel | File | Who reads it |
+|---|---|---|
+| `win32` | `.exe` full installer | desktop (when a hot update can't help), web download entry |
+| `win32-asar` | `.asar` hot update | desktop, preferred |
+| `android` | `.apk` | Android app, web download entry |
+
+Each client only checks its own channel: publishing an APK never prompts a desktop user, and vice versa.
+
+### Android updates
+
+The Android shell checks 8 seconds after start and every 6 hours, plus manually from About. On a new
+version, "立即更新" downloads the APK into the app's cache via the Filesystem plugin (with progress) and
+hands it to the system installer (`android/…/InstallerPlugin.java`, `ACTION_VIEW` through a FileProvider).
+The first time Android asks you to allow installs from this source. No sha256 check on APKs — Android
+verifies the signature itself and refuses anything signed with a different key.
+
+### iPhone
+
+There is no App Store build and unsigned native packages can't be installed, so iOS gets an install page
+(`#/ios`) instead: `GET /api/ios.mobileconfig` generates an Apple configuration profile (a Web Clip) for
+the requesting host, which puts a full-screen home-screen icon on the phone — same as "Add to Home Screen",
+but one tap from the login page. The page walks through the four steps with illustrations; on a computer
+it shows a QR code to open the same page on the phone. The profile is unsigned, so iOS labels it
+"Not Verified" — that's expected (signing needs an Apple Developer certificate).
+
+## Android app
+
+The Android app is not a rewrite: it wraps the web build's phone layout (card home screen + full-screen
+editor) in a Capacitor WebView shell, so sync, editing and conflict handling are the same code as the
+desktop and web versions. Change the web app, rebuild, and you have a new app version.
+
+**One-time setup** (Windows, no Android Studio needed):
+
+```powershell
+# Install JDK 17+ (jdk-23 works), then:
+powershell -ExecutionPolicy Bypass -File android/scripts/setup-sdk.ps1   # cmdline-tools + platform-tools + android-35 + build-tools, ~700 MB
+npm --prefix android install
+```
+
+Signing key: follow `android/keystore/README.md` to create `cloudnote.jks` and `keystore.properties`.
+**Lose that jks and future builds can no longer update existing installs** — back it up right away.
+
+**Building**:
+
+```bash
+VITE_CLOUDNOTE_SERVER=https://note.example.com npm --prefix app run build   # web bundle with your server baked in
+npm --prefix android run build     # copy into www/, patch one CSP line, cap sync
+npm --prefix android run apk       # gradlew assembleRelease → app/release/云笔记 <version>.apk
+```
+
+The version follows `app/package.json` (`versionCode` = major×10000 + minor×100 + patch). The first
+`gradlew` run downloads Gradle 8.11 and a JDK 21 toolchain (one plugin requires it).
+
+**Differences from the web version** (all behind `isNative` in `lib/platform.ts`):
+
+- Markdown export goes through the system share sheet (a WebView can't download `blob:` URLs).
+- `http://` self-hosted servers are allowed (`usesCleartextTraffic` + `allowMixedContent`), so a LAN
+  install works without certificates.
+- Android 15 enforces edge-to-edge and breaks `adjustResize`; `MainActivity` folds the keyboard height
+  into the WebView's bottom margin so the editor toolbar sits right above the keyboard.
+- The status bar is drawn over the page; the page reserves its height (`--safe-top` from the StatusBar
+  plugin) and icon colour follows the app theme.
+
+Back button: the editor page returns to the home screen; pressing again on the home screen exits.
+No iOS build (no Mac) — see the iPhone section above.
 
 ## Admin panel
 
@@ -440,7 +519,7 @@ At minimum, run these after a change:
 
 ```bash
 npm run server        # the e2e suite talks to a running server (use another terminal)
-npm test              # server end-to-end, 71 checks (admin ones need CLOUDNOTE_ADMINS=admin@test.local)
+npm test              # server end-to-end, 76 checks (admin ones need CLOUDNOTE_ADMINS=admin@test.local)
 cd app && npm run typecheck
 ```
 

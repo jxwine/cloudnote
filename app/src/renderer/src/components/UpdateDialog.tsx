@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { desktop } from '@/lib/platform'
+import { desktop, isNative } from '@/lib/platform'
 import { formatBytes, type UpdateInfo } from '@/lib/update'
 
 type Phase = 'idle' | 'downloading' | 'verifying' | 'ready' | 'restart'
@@ -17,12 +17,35 @@ const cleanMessage = (err: unknown) =>
  *
  * 两种包走两条路：整包下完直接拉起安装程序；热更新包（2 MB）下完只需重启，
  * 也可以先不重启——包已经落在本机了，下次启动自然生效。
+ * 安卓壳是第三条：Filesystem 插件下到缓存目录，再拉起系统安装页，剩下的交给系统。
  */
+
+/** 安卓：下 APK 到缓存目录，然后交给系统安装页。sha256 不校验——安卓自己会验签名 */
+async function downloadAndInstallApk(info: UpdateInfo, onProgress: (received: number) => void) {
+  const plugins = window.Capacitor?.Plugins
+  if (!plugins?.Filesystem?.downloadFile || !plugins.Installer) throw new Error('这个版本的安卓端不支持应用内更新')
+  const listener = await plugins.Filesystem.addListener('progress', (p) => onProgress(p.bytes))
+  try {
+    // 直接放缓存目录根下：downloadFile 不会替你建子目录（recursive 对它不生效，会 ENOENT）
+    const { path } = await plugins.Filesystem.downloadFile({
+      url: info.downloadUrl,
+      path: `cloudnote-${info.version}.apk`,
+      directory: 'CACHE',
+      progress: true,
+    })
+    if (!path) throw new Error('下载完成但没拿到文件路径')
+    onProgress(info.size)
+    await plugins.Installer.install({ path })
+  } finally {
+    void listener.remove()
+  }
+}
 export function UpdateDialog({ info, onClose }: { info: UpdateInfo; onClose: () => void }) {
   const [phase, setPhase] = useState<Phase>('idle')
   const [received, setReceived] = useState(0)
   const [error, setError] = useState('')
   const isHot = info.kind === 'hot'
+  const isApk = info.kind === 'apk'
 
   useEffect(() => {
     if (!desktop) return
@@ -39,10 +62,17 @@ export function UpdateDialog({ info, onClose }: { info: UpdateInfo; onClose: () 
   }, [onClose, phase])
 
   const start = async () => {
-    if (!desktop || phase !== 'idle') return
+    if (phase !== 'idle') return
     setError('')
     setPhase('downloading')
     try {
+      if (isApk) {
+        await downloadAndInstallApk(info, setReceived)
+        // 系统安装页已经弹出来，这边只能等用户在那边点；关掉弹窗别挡着
+        onClose()
+        return
+      }
+      if (!desktop) throw new Error('这个环境不支持应用内更新')
       if (isHot) {
         await desktop.downloadHotUpdate(info.downloadUrl, info.sha256, info.version)
         // 校验在主进程里已经做完了，能返回就说明通过了；接下来由用户决定何时重启
@@ -117,7 +147,9 @@ export function UpdateDialog({ info, onClose }: { info: UpdateInfo; onClose: () 
             <p className="update-hint">
               {isHot
                 ? '只下载改动的部分，几秒钟就好，下载完重启一次即可。'
-                : '安装时会先退出云笔记，未保存的改动已经自动同步过了。'}
+                : isApk || isNative
+                  ? '下载完成后会弹出系统的安装页面，按提示安装即可；第一次可能要先允许「安装未知应用」。'
+                  : '安装时会先退出云笔记，未保存的改动已经自动同步过了。'}
             </p>
           </>
         )}

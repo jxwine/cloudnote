@@ -1,0 +1,11 @@
+// 有的插件（@capacitor/filesystem）指定要用 JDK 21 编译，本机装的是别的版本也没关系：
+// 这个 resolver 会让 Gradle 自己下一份对应版本的 JDK 到 ~/.gradle/jdks，不用手动装
+plugins {
+    id 'org.gradle.toolchains.foojay-resolver-convention' version '0.9.0'
+}
+
+include ':app'
+include ':capacitor-cordova-android-plugins'
+project(':capacitor-cordova-android-plugins').projectDir = new File('./capacitor-cordova-android-plugins/')
+
+apply from: 'capacitor.settings.gradle'

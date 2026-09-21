@@ -288,11 +288,16 @@ pm2 start cloudnote
 
 ```bash
 cd /www/wwwroot/cloudnote
-git pull                       # 或重新上传 server/
+git pull                       # 或重新上传 server/src/
 bash deploy/setup.sh           # 会保留现有 .env，只更新依赖并重启
 ```
 
 数据库结构变更是自动迁移的（启动时按需 `ALTER TABLE`），不会动已有数据。
+
+**手动上传时只覆盖 `server/src/`（必要时加 `scripts/`、`package.json`），不要删掉或整个替换 `server/` 目录**——
+`node_modules/`（依赖）和 `data/`（数据库、图片、安装包）都在里面。整目录替换过一次的后果是依赖没了、
+全站 502（`pm2 logs cloudnote` 里是 `Cannot find package 'fastify'`），`npm install --omit=dev` 能救回来；
+`data/` 丢了就只能靠备份。
 
 ---
 

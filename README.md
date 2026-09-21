@@ -2,7 +2,7 @@
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%E2%89%A524-brightgreen.svg)](https://nodejs.org/)
-[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Web-lightgrey.svg)](#)
+[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Web%20%7C%20Android-lightgrey.svg)](#)
 
 [English](README.en.md) | **简体中文**
 
@@ -25,12 +25,14 @@
 - **自动更新**：客户端自己发现新版本，应用内下载、校验 sha256、拉起安装程序
 - **网页后台**：管理账号、发布客户端版本，网页端还能直接下载安装包
 - **网页版**：同一份前端代码，浏览器直接用，和桌面端实时互通；手机上是卡片首页 + 全屏编辑页，平板上大纲收成抽屉，可「添加到主屏幕」
+- **安卓端**：网页版手机档装进 Capacitor 壳打成 APK，后台发布、App 内更新；iPhone 走描述文件装到主屏幕
 
 ## 技术栈
 
 | | |
 |---|---|
 | 桌面端 | Electron + electron-vite + React 18 + TypeScript |
+| 安卓端 | Capacitor 7 把网页版手机档装进 WebView 壳，同一份构建产物 |
 | 编辑器 | Tiptap 3（ProseMirror） |
 | 服务端 | Fastify 5 + `node:sqlite`（Node 24 内置）+ `@fastify/websocket` |
 | 同步 | 每篇笔记单调递增 `version` 做乐观锁，每账号 `seq` 游标做增量拉取 |
@@ -50,7 +52,7 @@ npm run dev           # 同时启动同步服务和桌面客户端
 ```bash
 npm run server        # 只跑同步服务
 npm run app           # 只跑桌面客户端
-npm test              # 服务端端到端测试（71 项）
+npm test              # 服务端端到端测试（76 项）
 npm run dist          # 打包 Windows 安装程序到 app/release
 ```
 
@@ -73,7 +75,12 @@ note/
         ├── lib/store.ts    全局状态与本地缓存
         ├── lib/outline.ts  标题提取与滚动定位
         ├── lib/images.ts   图片上传（粘贴 / 拖入 / 选择文件）
-        └── components/     三栏界面
+        └── components/     三栏界面 + mobile/ 手机外壳
+└── android/          安卓端：Capacitor 壳，www/ 来自 app/out/renderer
+    ├── capacitor.config.ts
+    ├── android/        原生工程（gradle），MainActivity 只多了一段键盘 inset 处理
+    ├── scripts/        setup-sdk.ps1 装 SDK、build-www.mjs 准备 www/、collect-apk.mjs 收产物
+    └── keystore/       签名密钥（jks 和口令不进仓库，务必备份）
 ```
 
 ## 目录树
@@ -268,7 +275,67 @@ exe 递给你双击。校验通过才拉起安装程序并退出自己（NSIS �
 还得关掉签名校验，为这点收益多一个依赖不划算；而且它的差分下载是对 NSIS 包做块级 diff，
 实测远不如直接换 asar。
 
-网页版没有这一套，取而代之的是登录页和顶栏的「下载 Windows 客户端」。
+网页版没有这一套，取而代之的是下载入口：登录页、顶栏和设置「关于」里一排平台图标——电脑上
+安卓 / Windows / iPhone 三个，手机浏览器里只给自己那个；安卓和 Windows 只在服务器上发过那个通道时才出现。
+
+iPhone 那项进的是安装页 `#/ios`：iOS 上没有 App Store 版本，走苹果的「描述文件」（`GET /api/ios.mobileconfig`，
+服务端按请求域名现生成一个 Web Clip）把网页装到主屏幕，图标 / 全屏和 App 一样。页面上有四步图示，
+电脑打开会显示二维码让手机扫。描述文件没签名会标「未验证」，属正常（签名要 Apple 开发者证书）。
+
+### 三条通道
+
+后台「发布新版本」按文件扩展名认客户端类型（下拉框预选好，也能手改），服务端只收这三种：
+
+| 通道 | 文件 | 谁看它 |
+|---|---|---|
+| `win32` | `.exe` 整包 | 桌面端（热更新给不了时）、网页下载入口 |
+| `win32-asar` | `.asar` 热更新 | 桌面端优先 |
+| `android` | `.apk` | 安卓端、网页下载入口 |
+
+各端检查更新只看自己的通道：发了安卓包，桌面端不会弹；反过来也一样。
+
+### 安卓端更新
+
+安卓壳里同样是启动 8 秒后查一次、每 6 小时一次，关于页也能手动查。发现新版本 → 「立即更新」
+→ 用 Filesystem 插件把 APK 下到 App 的缓存目录（带进度）→ 交给系统安装页（`android/…/InstallerPlugin.java`，
+经 FileProvider 拉起 `ACTION_VIEW`）。第一次系统会要求允许「安装未知应用」，跟着提示开一下就行。
+APK 不做 sha256 校验——安卓自己会验签名，签名对不上根本装不进去。
+
+## 安卓端
+
+安卓端不是另写的一套：它把网页版的手机档（卡片首页 + 全屏编辑页）装进 Capacitor 的 WebView 壳，
+同步、编辑、冲突处理和桌面端 / 网页版是同一份代码。网页改了，重新打包就是新版 App。
+
+**一次性准备**（Windows，不需要 Android Studio）：
+
+```powershell
+# 装 JDK 17+（本机有 jdk-23 即可），然后：
+powershell -ExecutionPolicy Bypass -File android/scripts/setup-sdk.ps1   # cmdline-tools + platform-tools + android-35 + build-tools，约 700 MB
+npm --prefix android install
+```
+
+签名密钥：按 `android/keystore/README.md` 生成 `cloudnote.jks` 和 `keystore.properties`。
+**这个 jks 丢了，以后的包就不能覆盖安装到老用户手机上**，生成后立刻备份。
+
+**出包**：
+
+```bash
+VITE_CLOUDNOTE_SERVER=https://note.example.com npm --prefix app run build   # 网页产物，带上你的服务器地址
+npm --prefix android run build     # 拷进 www/、改一处 CSP、cap sync
+npm --prefix android run apk       # gradlew assembleRelease → app/release/云笔记 <版本>.apk
+```
+
+版本号跟 `app/package.json` 走（`versionCode` = 主×10000 + 次×100 + 修）。
+第一次 `gradlew` 会自己下 Gradle 8.11 和一份 JDK 21（有插件指定要它编译）。
+
+**和网页版的差别**（都在 `lib/platform.ts` 的 `isNative` 分支里）：
+
+- 导出 Markdown 走系统分享面板（WebView 下不了 blob:），存网盘 / 发微信 / 保存到文件都行。
+- 允许连 `http://` 的自建服务（`usesCleartextTraffic` + `allowMixedContent`），局域网自建不用配证书。
+- Android 15 起系统强制边到边，`adjustResize` 失效，`MainActivity` 自己把键盘高度算进 WebView 的底边距，
+  编辑器的格式工具栏才能贴在键盘上方。
+
+安卓返回键：编辑页退回首页，首页再按一次退出。iOS 没做（没有 Mac）。
 
 ## 后台管理
 
@@ -283,7 +350,7 @@ exe 递给你双击。校验通过才拉起安装程序并退出自己（NSIS �
 | 页面 | 能做什么 |
 |---|---|
 | 用户 | 看邮箱、昵称、注册时间、最后活跃、笔记数、在线设备；停用/启用、重置密码、删除账号 |
-| 客户端版本 | 上传安装包（带进度）、写更新说明、上下架、删除 |
+| 客户端版本 | 上传安装包（.exe / .asar / .apk 三种类型，带进度）、写更新说明、上下架、删除 |
 
 几条护栏：管理员不能停用或删除自己；删除账号要手输目标邮箱确认，服务端会再校验一次；
 停用会立刻踢掉该账号所有 WebSocket 连接，已发出去的 token 下一个请求就失效。
@@ -391,7 +458,7 @@ fork 出来的服务起不来。注入地址后 `__USE_BUNDLED_SERVER__` 为假�
 
 ```bash
 npm run server        # 端到端测试要先把服务跑起来（另开一个终端）
-npm test              # 服务端端到端，71 项（后台相关的需要 CLOUDNOTE_ADMINS=admin@test.local）
+npm test              # 服务端端到端，76 项（后台相关的需要 CLOUDNOTE_ADMINS=admin@test.local）
 cd app && npm run typecheck
 ```
 

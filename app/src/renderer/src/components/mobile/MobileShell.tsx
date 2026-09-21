@@ -5,6 +5,8 @@ import { Toast } from '../Toast'
 import { PromptDialog } from '../PromptDialog'
 import { AuthExpiredDialog } from '../AuthExpiredDialog'
 import { SettingsDialog } from '../SettingsDialog'
+import { UpdateDialog } from '../UpdateDialog'
+import { useUpdateCheck } from '@/lib/useUpdateCheck'
 import { MobileHome } from './MobileHome'
 import { MobileNote } from './MobileNote'
 
@@ -34,6 +36,8 @@ export function MobileShell({ route }: { route: string }) {
   const activeNoteId = useStore((s) => s.activeNoteId)
   const searchJump = useStore((s) => s.searchJump)
   const [settings, setSettings] = useState(false)
+  // 安卓壳里查更新（网页手机档里这个 hook 什么都不做）
+  const { update, setUpdate, available, manualCheck } = useUpdateCheck()
   /** 首页正在看的目录。放在这一层：进了编辑页首页会卸载，回来还得在那个目录里 */
   const [folderId, setFolderId] = useState<string | null>(null)
 
@@ -60,8 +64,13 @@ export function MobileShell({ route }: { route: string }) {
       <Toast />
       <PromptDialog />
       {settings && (
-        <SettingsDialog onClose={() => setSettings(false)} onCheckUpdate={() => {}} newVersion={null} />
+        <SettingsDialog
+          onClose={() => setSettings(false)}
+          onCheckUpdate={() => void manualCheck()}
+          newVersion={available?.version ?? null}
+        />
       )}
+      {update && <UpdateDialog info={update} onClose={() => setUpdate(null)} />}
       <AuthExpiredDialog />
     </div>
   )
