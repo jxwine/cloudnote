@@ -42,40 +42,74 @@ export function DownloadLinks({ variant }: { variant: 'tiles' | 'icons' }) {
   const showIOS = !isStandalone && !isAndroidBrowser
   if (!showAndroid && !showWindows && !showIOS) return null
 
-  const cls = variant === 'tiles' ? 'dl-tile' : 'icon-btn dl-icon'
-  const size = variant === 'tiles' ? 26 : 16
-  const label = (text: string) => variant === 'tiles' && <span className="dl-tile-label">{text}</span>
+  interface Item {
+    key: string
+    label: string
+    /** 一行式里放右边的小字：版本和大小，iPhone 那项是说明 */
+    meta: string
+    href: string
+    download?: string
+    title: string
+  }
+  const items: Item[] = []
+  if (showAndroid && downloads.android) {
+    const d = downloads.android
+    items.push({
+      key: 'android', label: '安卓', meta: `v${d.version} · ${formatBytes(d.size)}`,
+      href: d.downloadUrl, download: d.filename, title: `安卓端 v${d.version} · ${formatBytes(d.size)}`
+    })
+  }
+  if (showWindows && downloads.windows) {
+    const d = downloads.windows
+    items.push({
+      key: 'windows', label: 'Windows', meta: `v${d.version} · ${formatBytes(d.size)}`,
+      href: d.downloadUrl, download: d.filename, title: `Windows 客户端 v${d.version} · ${formatBytes(d.size)}`
+    })
+  }
+  if (showIOS) {
+    items.push({ key: 'ios', label: 'iPhone', meta: '安装到主屏幕', href: IOS_ROUTE, title: 'iPhone / iPad：安装到主屏幕' })
+  }
 
+  if (variant === 'icons') {
+    return (
+      <div className="dl-group" role="group" aria-label="下载客户端">
+        {items.map((it) => (
+          <a key={it.key} className="icon-btn dl-icon" href={it.href} download={it.download} title={it.title}>
+            <Glyph k={it.key} size={16} />
+          </a>
+        ))}
+      </div>
+    )
+  }
+
+  // 三个并排才铺方块；只有一两个（手机上永远是一个）时铺成方块又大又空，改成一行式
+  if (items.length >= 3) {
+    return (
+      <div className="dl-tiles" role="group" aria-label="下载客户端">
+        {items.map((it) => (
+          <a key={it.key} className="dl-tile" href={it.href} download={it.download} title={it.title}>
+            <Glyph k={it.key} size={26} />
+            <span className="dl-tile-label">{it.label}</span>
+          </a>
+        ))}
+      </div>
+    )
+  }
   return (
-    <div className={variant === 'tiles' ? 'dl-tiles' : 'dl-group'} role="group" aria-label="下载客户端">
-      {showAndroid && downloads.android && (
-        <a
-          className={cls}
-          href={downloads.android.downloadUrl}
-          download={downloads.android.filename}
-          title={`安卓端 v${downloads.android.version} · ${formatBytes(downloads.android.size)}`}
-        >
-          <IconAndroid size={size} />
-          {label('安卓')}
+    <div className="dl-rows" role="group" aria-label="下载客户端">
+      {items.map((it) => (
+        <a key={it.key} className="dl-row" href={it.href} download={it.download} title={it.title}>
+          <Glyph k={it.key} size={18} />
+          <span className="dl-row-label">{it.key === 'ios' ? '安装到 iPhone 主屏幕' : `下载${it.label}端`}</span>
+          <span className="dl-row-meta">{it.meta}</span>
         </a>
-      )}
-      {showWindows && downloads.windows && (
-        <a
-          className={cls}
-          href={downloads.windows.downloadUrl}
-          download={downloads.windows.filename}
-          title={`Windows 客户端 v${downloads.windows.version} · ${formatBytes(downloads.windows.size)}`}
-        >
-          <IconWindows size={size} />
-          {label('Windows')}
-        </a>
-      )}
-      {showIOS && (
-        <a className={cls} href={IOS_ROUTE} title="iPhone / iPad：安装到主屏幕">
-          <IconApple size={size} />
-          {label('iPhone')}
-        </a>
-      )}
+      ))}
     </div>
   )
+}
+
+function Glyph({ k, size }: { k: string; size: number }) {
+  if (k === 'android') return <IconAndroid size={size} />
+  if (k === 'windows') return <IconWindows size={size} />
+  return <IconApple size={size} />
 }

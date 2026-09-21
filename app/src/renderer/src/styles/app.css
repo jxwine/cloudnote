@@ -3396,7 +3396,59 @@ body.is-reflowing .bubble-bar {
 }
 
 .auth-downloads {
-  margin-top: 16px;
+  margin-top: 14px;
+}
+
+/* 只有一两个入口时的一行式：和登录按钮同宽，紧凑 */
+.dl-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.dl-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 38px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--raised);
+  color: var(--text);
+  font-size: 13px;
+  text-decoration: none;
+  transition: border-color 0.15s var(--ease), background 0.15s var(--ease);
+}
+
+.dl-row:hover {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+}
+
+.dl-row-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dl-row-meta {
+  font-size: 12px;
+  color: var(--text-3);
+  white-space: nowrap;
+}
+
+/* 关于页里的一行式不撑满，跟着内容走 */
+.settings-row .dl-rows {
+  flex-direction: row;
+  flex-wrap: wrap;
+}
+
+.settings-row .dl-row {
+  height: 32px;
+  padding: 0 10px;
 }
 
 /* 顶栏：三个图标挤成一组，一眼看出是同一类东西 */
