@@ -1142,6 +1142,32 @@ textarea {
   cursor: default;
 }
 
+/* 设置页每行右侧的操作按钮：灰字看着像说明文字，人找不到能点的地方——给它品牌色底 */
+.settings-row .btn-ghost {
+  height: 32px;
+  padding: 0 14px;
+  border-radius: 8px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 550;
+  flex: 0 0 auto;
+}
+
+.settings-row .btn-ghost:hover {
+  background: var(--accent);
+  color: #fff;
+}
+
+.settings-row .btn-ghost.is-danger {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.settings-row .btn-ghost.is-danger:hover {
+  background: var(--danger);
+  color: #fff;
+}
+
 /* ============================ 登录 ============================ */
 
 .auth {
@@ -3923,10 +3949,44 @@ html[data-viewport='phone'] .settings-nav {
   border-bottom: 1px solid var(--line-soft);
 }
 
+/* 手机上仍然左边说明、右边按钮：堆成上下之后按钮掉到文字底下，像一行普通文字 */
 html[data-viewport='phone'] .settings-row {
-  align-items: flex-start;
-  flex-direction: column;
-  gap: 10px;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 12px;
+}
+
+/* 滑块这种宽控件在窄屏上换到下一行铺满，按钮和分段开关仍留在右边 */
+html[data-viewport='phone'] .settings-row .slider {
+  flex: 1 0 100%;
+}
+
+html[data-viewport='phone'] .settings-row .slider input[type='range'] {
+  flex: 1;
+  width: auto;
+}
+
+/* 「默认」那个占位放到最右边，滑块从左边顶格开始 */
+html[data-viewport='phone'] .settings-row .reset-link {
+  order: 3;
+  min-width: 0;
+}
+
+html[data-viewport='phone'] .settings-row-text {
+  flex: 1;
+  min-width: 0;
+}
+
+html[data-viewport='phone'] .settings-row .btn-ghost {
+  height: 38px;
+  padding: 0 16px;
+  font-size: 14px;
+}
+
+/* 一行里有多个按钮（关于页的下载）或者控件太宽时允许换行，但按钮始终靠右 */
+html[data-viewport='phone'] .settings-row > :not(.settings-row-text) {
+  margin-left: auto;
 }
 
 /* 历史版本：左右分栏在手机上各剩一百来像素，改成上下 */
