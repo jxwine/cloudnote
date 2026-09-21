@@ -502,7 +502,11 @@ export default async function routes(app) {
         Q.setDisabled.run(disabled ? 1 : 0, target.id)
         if (disabled) kick(target.id, 'account disabled')
       }
-      if (password !== undefined) resetPassword(target.id, password)
+      if (password !== undefined) {
+        resetPassword(target.id, password)
+        // 密码都重置了，说明原来那份凭证不该再被信任：把已登录的设备踢下线，让它用新密码重新登录
+        kick(target.id, 'password reset')
+      }
 
       const row = Q.getUserRow.get(target.id)
       return { id: row.id, email: row.email, disabled: !!row.disabled }

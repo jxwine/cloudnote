@@ -112,6 +112,8 @@ function addColumn(table, column, definition) {
 addColumn('notes', 'tags', "TEXT NOT NULL DEFAULT '[]'")
 addColumn('users', 'disabled', 'INTEGER NOT NULL DEFAULT 0')
 addColumn('users', 'last_active_at', 'INTEGER')
+// 管理员重置密码的时间：早于它签出的 token 一律作废，不然被踢下线的设备拿旧 token 一重连又回来了
+addColumn('users', 'password_reset_at', 'INTEGER')
 
 /** 为某用户取下一个单调递增的变更序号（增量同步游标） */
 const bumpSeq = db.prepare('UPDATE users SET seq = seq + 1 WHERE id = ?')

@@ -5,7 +5,7 @@ import Fastify from 'fastify'
 import cors from '@fastify/cors'
 import websocket from '@fastify/websocket'
 import routes from './routes.js'
-import { verify, getUser } from './auth.js'
+import { verify, getUser, tokenPredatesReset } from './auth.js'
 import { join, broadcast, peerCount } from './hub.js'
 
 const PORT = Number(process.env.PORT || 4471)
@@ -62,8 +62,10 @@ app.get('/ws', { websocket: true }, (socket, req) => {
   const payload = token ? verify(token) : null
   const user = payload && getUser(payload.uid)
 
-  if (!user || user.disabled) {
-    socket.send(JSON.stringify({ type: 'error', message: user ? '账号已被停用' : '未授权' }))
+  // 和 authGuard 同一套规则：停用的、或者管理员重置密码之前签出的 token，都不让连
+  const stale = user && tokenPredatesReset(payload, user)
+  if (!user || user.disabled || stale) {
+    socket.send(JSON.stringify({ type: 'error', message: user ? (stale ? '密码已被重置' : '账号已被停用') : '未授权' }))
     socket.close(4001, 'unauthorized')
     return
   }

@@ -276,11 +276,14 @@ if (!adminMe?.user?.isAdmin) {
   await api('PATCH', `/api/admin/users/${victim.user.id}`, { token: adminToken, body: { disabled: false } })
   ok((await api('GET', '/api/me', { token: victim.token })).status === 200, '启用后恢复')
 
+  // jwt 的 iat 精确到秒：重置要落在签 token 之后的那一秒，否则比不出先后
+  await new Promise((r) => setTimeout(r, 1100))
   await api('PATCH', `/api/admin/users/${victim.user.id}`, { token: adminToken, body: { password: 'reset12345' } })
-  ok(
-    (await api('POST', '/api/auth/login', { body: { email: victimEmail, password: 'reset12345' } })).status === 200,
-    '管理员重置密码后新密码可登录'
-  )
+  ok((await api('GET', '/api/me', { token: victim.token })).status === 401, '重置密码后旧 token 立即失效')
+  const relogin = await api('POST', '/api/auth/login', { body: { email: victimEmail, password: 'reset12345' } })
+  ok(relogin.status === 200, '管理员重置密码后新密码可登录')
+  ok((await api('GET', '/api/me', { token: relogin.data.token })).status === 200, '重新登录拿到的新 token 可用')
+  victim.token = relogin.data.token
 
   ok(
     (await api('DELETE', `/api/admin/users/${victim.user.id}`, {

@@ -33,6 +33,13 @@ export const toUser = (row) => ({
 export const sign = (user) =>
   jwt.sign({ uid: user.id, email: user.email }, SECRET, { expiresIn: TTL })
 
+/**
+ * token 是不是在管理员重置密码之前签的。jwt 的 iat 只精确到秒，比较也按秒来：
+ * 重置后同一秒内重新登录拿到的新 token 必须算有效，否则用户改完密码马上登录会被误拒。
+ */
+export const tokenPredatesReset = (payload, user) =>
+  !!user?.password_reset_at && (payload?.iat || 0) < Math.floor(user.password_reset_at / 1000)
+
 export function verify(token) {
   try {
     return jwt.verify(token, SECRET)
@@ -43,7 +50,7 @@ export function verify(token) {
 
 const findByEmail = db.prepare('SELECT * FROM users WHERE email = ?')
 const findById = db.prepare(
-  'SELECT id, email, display_name, seq, disabled, last_active_at FROM users WHERE id = ?'
+  'SELECT id, email, display_name, seq, disabled, last_active_at, password_reset_at FROM users WHERE id = ?'
 )
 const insertUser = db.prepare(
   'INSERT INTO users (id, email, password_hash, display_name, seq, created_at) VALUES (?, ?, ?, ?, 0, ?)'
@@ -72,13 +79,16 @@ export const getUser = (id) => findById.get(id)
 
 const findRawById = db.prepare('SELECT * FROM users WHERE id = ?')
 const updatePassword = db.prepare('UPDATE users SET password_hash = ? WHERE id = ?')
+const updatePasswordByAdmin = db.prepare('UPDATE users SET password_hash = ?, password_reset_at = ? WHERE id = ?')
 
 /** 管理员重置密码：不校验旧密码，因为用户就是忘了才找上来的 */
 export function resetPassword(userId, newPassword) {
   const row = findRawById.get(userId)
   if (!row) throw httpError(404, '用户不存在')
   if (String(newPassword || '').length < 6) throw httpError(400, '密码至少 6 位')
-  updatePassword.run(bcrypt.hashSync(String(newPassword), 10), userId)
+  // 记下时间点：之前签出去的 token 从此失效（authGuard 里比较），已登录的设备得用新密码重新登录。
+  // 用户自己改密码不走这条——那种情况当前设备还想继续用，token 不该作废
+  updatePasswordByAdmin.run(bcrypt.hashSync(String(newPassword), 10), Date.now(), userId)
 }
 
 export function changePassword(userId, oldPassword, newPassword) {
@@ -110,6 +120,9 @@ export function authGuard(req, reply, done) {
   if (!user) return reply.code(401).send({ error: '登录已失效，请重新登录' })
   // 停用的账号连同已发出去的 token 一起失效。客户端见到 401 会自动退到登录页。
   if (user.disabled) return reply.code(401).send({ error: '账号已被停用，请联系管理员' })
+  // 管理员重置过密码：重置之前签的 token 作废
+  if (tokenPredatesReset(payload, user))
+    return reply.code(401).send({ error: '密码已被重置，请用新密码重新登录' })
 
   const now = Date.now()
   if (!user.last_active_at || now - user.last_active_at > ACTIVE_THROTTLE) {

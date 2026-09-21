@@ -5,6 +5,8 @@ import type { AdminStats } from '@/lib/types'
 import { AdminUsers } from './AdminUsers'
 import { AdminReleases } from './AdminReleases'
 import { IconCloud, IconClose } from '../Icons'
+import { PromptDialog } from '../PromptDialog'
+import { Toast } from '../Toast'
 
 type Tab = 'users' | 'releases'
 
@@ -74,6 +76,11 @@ export function AdminApp({ onExit }: { onExit: () => void }) {
       </nav>
 
       <main className="admin-body">{tab === 'users' ? <AdminUsers /> : <AdminReleases />}</main>
+
+      {/* 重置密码用的输入框和各种「已发布 / 已重置」提示都靠这两个渲染；
+          它们平时挂在 Workspace 里，后台是另一棵树，得自己带一份，不然 prompt() 永远没人应 */}
+      <PromptDialog />
+      <Toast />
     </div>
   )
 }
