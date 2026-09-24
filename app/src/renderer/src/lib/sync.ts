@@ -1,6 +1,7 @@
 import { api, session, clientId, AuthError, ConflictError, OfflineError, newLocalId } from './api'
 import { useStore } from './store'
 import type { Note } from './types'
+import { activateAccountScope, getAccountEpoch, invalidateAccountEpoch } from './accountStorage'
 
 const QUEUE_KEY = 'cloudnote.queue'
 const PENDING_KEY = 'cloudnote.pending'
@@ -32,7 +33,7 @@ let retry = 0
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null
 let stopped = true
 
-type Patch = { title: string; content: string; excerpt: string }
+type Patch = Partial<Pick<Note, 'title' | 'content' | 'excerpt' | 'folderId' | 'sortOrder' | 'tags' | 'deleted'>>
 
 /**
  * 每篇笔记待落库的改动。必须落到 localStorage：只放内存里的话，
@@ -40,45 +41,74 @@ type Patch = { title: string; content: string; excerpt: string }
  * beforeunload 里的网络请求根本来不及发出去。
  */
 const pendingSaves = new Map<string, Patch>()
+let draftsLoaded = false
+let accountSuspended = false
+let pendingReadBlocked = false
+let backedUpCorruptPending: string | null = null
 const saveTimers = new Map<string, ReturnType<typeof setTimeout>>()
 const saveFailures = new Map<string, number>()
 /** 这一批待保存的改动最早是什么时候攒下的，用来兜住 SAVE_MAX_WAIT */
 const saveSince = new Map<string, number>()
 /** 正在发请求的笔记，防止同一篇并发两个 PATCH */
-const savingNotes = new Set<string>()
-/** 每次 queueSave 自增，用来判断请求期间有没有新改动进来 */
-const saveGen = new Map<string, number>()
-let persistTimer: ReturnType<typeof setTimeout> | null = null
-
-function persistPending(immediate = false) {
-  if (persistTimer) {
-    clearTimeout(persistTimer)
-    persistTimer = null
+const savingNotes = new Map<string, Promise<void>>()
+const pendingBases = new Map<string, number>()
+let syncTask: Promise<void> | null = null
+let syncAgain = false
+let replayTask: Promise<void> | null = null
+/** 请求在途期间也保留草稿；第三项携带恢复所需的基准与笔记，兼容旧的二元组。 */
+function persistPending(): boolean {
+  // 旧草稿损坏且还没有安全备份时，绝不能用新草稿覆盖唯一的原文。
+  if (pendingReadBlocked) return false
+  if (!draftsLoaded) return true
+  try {
+    if (pendingSaves.size) {
+      localStorage.setItem(PENDING_KEY, JSON.stringify([...pendingSaves].map(([id, patch]) =>
+        [id, patch, {
+          baseVersion: pendingBases.get(id),
+          // patch 已含正文时只留元数据；恢复时会由 patch 补回正文。
+          note: patch.content === undefined ? store().notes[id] :
+            store().notes[id] && { ...store().notes[id], content: undefined },
+        }]
+      )))
+    } else localStorage.removeItem(PENDING_KEY)
+    return true
+  } catch {
+    store().setStatus('error')
+    store().showToast({ message: '本机存储空间不足，草稿尚未写入本机，请保持应用打开并导出备份' })
+    return false
   }
-  const write = () => {
-    persistTimer = null
-    try {
-      if (pendingSaves.size) localStorage.setItem(PENDING_KEY, JSON.stringify([...pendingSaves]))
-      else localStorage.removeItem(PENDING_KEY)
-    } catch {
-      /* 配额满了就放弃这份缓存，不影响在线保存 */
-    }
-  }
-  if (immediate) write()
-  else persistTimer = setTimeout(write, 200)
 }
 
 function restorePending() {
   try {
-    const raw = localStorage.getItem(PENDING_KEY)
-    if (!raw) return
-    for (const [id, patch] of JSON.parse(raw) as [string, Patch][]) {
-      if (!pendingSaves.has(id)) pendingSaves.set(id, patch)
+    const entries = JSON.parse(localStorage.getItem(PENDING_KEY) || '[]') as [string, Patch, { baseVersion?: number; note?: Note }?][]
+    for (const [id, patch, recovery] of entries) {
+      if (pendingSaves.has(id)) continue
+      const local = store().notes[id] ?? recovery?.note
+      pendingSaves.set(id, patch)
+      pendingBases.set(id, recovery?.baseVersion ?? local?.version ?? 1)
+      if (local) store().applyNote({ ...local, ...patch })
     }
+    draftsLoaded = true
+    pendingReadBlocked = false
+    store().setDirty(pendingSaves.keys().next().value ?? null)
   } catch {
-    localStorage.removeItem(PENDING_KEY)
+    // 先留下损坏数据的原文，之后的新编辑才允许写回 PENDING_KEY。
+    try {
+      const raw = localStorage.getItem(PENDING_KEY)
+      if (raw !== null && raw !== backedUpCorruptPending) {
+        localStorage.setItem(`${PENDING_KEY}.corrupt.${Date.now()}.${Math.random().toString(36).slice(2)}`, raw)
+        backedUpCorruptPending = raw
+      }
+      pendingReadBlocked = false
+      store().showToast({ message: '本机草稿读取失败，原始数据已备份，请检查本机数据' })
+    } catch {
+      pendingReadBlocked = true
+      store().showToast({ message: '本机草稿读取失败且无法备份，请保持应用打开并导出本机数据' })
+    }
   }
 }
+
 /** noteId → 最近一次归档出的冲突副本，短时间内的连续冲突复用同一条副本 */
 const activeArchive = new Map<string, { copyId: string; at: number }>()
 /** 同一篇笔记的归档排成一条队，避免并发时建出多条相同的冲突副本 */
@@ -104,51 +134,81 @@ function enqueue(op: QueuedOp) {
   saveQueue([...loadQueue(), op])
 }
 
-async function replayQueue() {
-  const queue = loadQueue()
-  if (!queue.length) return
-  const rest: QueuedOp[] = []
-  for (let i = 0; i < queue.length; i++) {
-    const op = queue[i]
-    try {
-      await runOp(op)
-    } catch (err) {
-      if (err instanceof OfflineError) {
-        // 还是离线，剩下的原样留到下次
-        rest.push(...queue.slice(i))
-        break
+function replayQueue(): Promise<void> {
+  if (replayTask) return replayTask
+  const epoch = getAccountEpoch()
+  const task = Promise.resolve().then(async () => {
+    while (epoch === getAccountEpoch() && session.token) {
+      const op = loadQueue()[0]
+      if (!op) break
+      try {
+        await runOp(op, epoch)
+      } catch (err) {
+        if (epoch !== getAccountEpoch()) return
+        if (err instanceof AuthError) onAuthExpired(err.message)
+        else store().setStatus(err instanceof OfflineError ? 'offline' : 'error')
+        // 未确认的操作留在队列，包括服务端暂时失败；不能静默丢弃。
+        return
       }
-      if (err instanceof AuthError) {
-        // 凭证失效不是「这条操作有问题」，整队原样留着，别当业务错误丢掉
-        rest.push(...queue.slice(i))
-        onAuthExpired(err.message)
-        break
-      }
-      // 业务错误（比如对象已被别端删除）直接丢弃，避免卡住整个队列
+      if (epoch !== getAccountEpoch()) return
+      const current = loadQueue()
+      // 操作执行期间可能追加了新项，只移除这次确认的项。
+      const index = current.findIndex((item) => JSON.stringify(item) === JSON.stringify(op))
+      if (index >= 0) current.splice(index, 1)
+      saveQueue(current)
     }
-  }
-  saveQueue(rest)
+  }).finally(() => { if (replayTask === task) replayTask = null })
+  replayTask = task
+  return task
 }
 
-async function runOp(op: QueuedOp) {
+async function runOp(op: QueuedOp, epoch: number) {
+  const current = () => epoch === getAccountEpoch()
   switch (op.kind) {
-    case 'folder.create':
-      store().applyFolder(await api.createFolder(op))
-      break
-    case 'folder.update':
-      store().applyFolder(await api.updateFolder(op.id, { name: op.name, parentId: op.parentId, sortOrder: op.sortOrder }))
-      break
-    case 'folder.delete': {
-      const res = await api.deleteFolder(op.id)
-      store().applyBatch(res.folders, res.notes)
+    case 'folder.create': {
+      const folder = await api.createFolder(op)
+      if (current()) store().applyFolder(folder)
       break
     }
-    case 'note.create':
-      store().applyNote(await api.createNote(op))
+    case 'folder.update': {
+      const folder = await api.updateFolder(op.id, { name: op.name, parentId: op.parentId, sortOrder: op.sortOrder })
+      if (current()) store().applyFolder(folder)
       break
-    case 'note.delete':
-      store().applyNote(await api.deleteNote(op.id))
+    }
+    case 'folder.delete': {
+      const res = await api.deleteFolder(op.id)
+      if (current()) {
+        store().applyBatch(res.folders, [])
+        res.notes.forEach(onRemoteNote)
+      }
       break
+    }
+    case 'note.create': {
+      let saved: Note
+      try { saved = await api.createNote(op) }
+      catch (err) {
+        if (!current() || err instanceof OfflineError || err instanceof AuthError) throw err
+        // 请求已成功但回执丢失时，相同 id 的创建会失败；回读确认后再出队。
+        const existing = (await api.pull(0)).notes.find((n) => n.id === op.id)
+        if (!existing) throw err
+        saved = existing
+      }
+      if (current()) {
+        const draft = pendingSaves.get(op.id)
+        store().applyNote({ ...saved, ...draft })
+        if (draft) {
+          // 已存在的记录可能来自请求回执丢失，仍须保留原基准以便检测冲突。
+          if (!pendingBases.has(op.id)) pendingBases.set(op.id, saved.version)
+          persistPending()
+        }
+      }
+      break
+    }
+    case 'note.delete': {
+      const saved = await api.deleteNote(op.id)
+      if (current()) onRemoteNote(saved)
+      break
+    }
   }
 }
 
@@ -156,24 +216,34 @@ async function runOp(op: QueuedOp) {
 
 export function start() {
   if (!session.token) return
+  accountSuspended = false
   stopped = false
-  // 上次没送出去的改动先捡回来，连上之后 flushAll 会补发
   restorePending()
   connectWs()
   void syncNow()
 }
 
-/**
- * 对账一次：**永远先把本地待发的送出去，再拉远端**。
- *
- * 顺序反过来会静默吃掉别的设备的改动：pullDelta 的 applyBatch 对「本地正在编辑」的笔记
- * 会把远端版本号收下（见 store.ts 里那段），随后 flushAll 拿着这个新版本号去 PATCH，
- * 服务端一比对 baseVersion 是最新的，判不出冲突就直接放行——乐观锁等于被自己解除了。
- * 断网续写、合盖再打开、切网络，都会走到这里。
- */
-export async function syncNow() {
-  await flushAll()
-  await pullDelta()
+/** 启动、焦点、重连共用同一轮对账，先补建，再提交草稿，再拉取。 */
+export function syncNow(): Promise<void> {
+  if (syncTask) {
+    // 网络恢复时，旧一轮可能仍在等待即将失败的请求；保留这次重跑意图。
+    syncAgain = true
+    return syncTask
+  }
+  const epoch = getAccountEpoch()
+  const task = Promise.resolve().then(async () => {
+    if (!session.token) return
+    do {
+      syncAgain = false
+      await replayQueue()
+      if (epoch !== getAccountEpoch()) return
+      await flushAll()
+      if (epoch !== getAccountEpoch()) return
+      await pullDelta()
+    } while (syncAgain && epoch === getAccountEpoch() && session.token)
+  }).finally(() => { if (syncTask === task) syncTask = null })
+  syncTask = task
+  return task
 }
 
 export function stop() {
@@ -190,19 +260,17 @@ function connectWs() {
 
   store().setStatus('connecting')
   const url = session.server.replace(/^http/, 'ws') + `/ws?token=${session.token}&clientId=${clientId}`
-  ws = new WebSocket(url)
+  const socket = new WebSocket(url)
+  ws = socket
 
-  ws.onopen = () => {
+  socket.onopen = () => {
+    if (ws !== socket || stopped) return
     retry = 0
-    store().setStatus('synced')
-    void (async () => {
-      await replayQueue()
-      await flushAll()
-      await pullDelta()
-    })()
+    void syncNow()
   }
 
-  ws.onmessage = (ev) => {
+  socket.onmessage = (ev) => {
+    if (ws !== socket || stopped) return
     let msg: Record<string, unknown>
     try {
       msg = JSON.parse(ev.data as string)
@@ -212,14 +280,15 @@ function connectWs() {
     handleMessage(msg)
   }
 
-  ws.onclose = () => {
+  socket.onclose = () => {
+    if (ws !== socket) return
     ws = null
     if (stopped) return
     store().setStatus('offline', 0)
     scheduleReconnect()
   }
 
-  ws.onerror = () => ws?.close()
+  socket.onerror = () => socket.close()
 }
 
 function scheduleReconnect() {
@@ -231,7 +300,7 @@ function scheduleReconnect() {
 function handleMessage(msg: Record<string, unknown>) {
   switch (msg.type) {
     case 'ready':
-      store().setStatus('synced', (msg.peers as number) ?? 0)
+      store().setStatus(hasPending() || loadQueue().length ? 'syncing' : 'synced', (msg.peers as number) ?? 0)
       break
     case 'presence':
       store().setStatus(store().status === 'offline' ? 'synced' : store().status, Math.max(0, ((msg.peers as number) ?? 1) - 1))
@@ -258,60 +327,22 @@ function handleMessage(msg: Record<string, unknown>) {
  * - 这篇笔记本地没有未保存改动 → 直接热更新，用户正在浏览就能立刻看到
  * - 本地正在编辑 → 把云端版本归档成冲突副本，本地内容原样保留
  */
-function onRemoteNote(remote: Note) {
+function onRemoteNote(remote: Note): boolean {
   const s = store()
   const local = s.notes[remote.id]
-  const isEditing = s.dirtyNoteId === remote.id || pendingSaves.has(remote.id)
-
-  // 别端把你正开着的这篇删了：合上它，别让编辑区停在一篇已经不存在的笔记上
-  if (remote.deleted) {
-    pendingSaves.delete(remote.id)
-    persistPending()
-    s.applyNote(remote)
-    if (s.activeNoteId === remote.id) {
-      s.setActive(null)
-      s.showToast({ message: `「${local?.title?.trim() || '无标题'}」已在其他设备上删除` })
-    }
-    return
+  if (local && remote.version <= local.version) return true
+  // 在途请求也是草稿；接收远端消息不能改变它的基准版本。
+  // 等提交时由服务端 409 返回最新内容，归档成功后才允许覆盖。
+  if (pendingSaves.has(remote.id)) return false
+  if (Date.now() - (recentSave.get(remote.id) ?? 0) < RECENT_SAVE_MS && local && local.content !== remote.content) {
+    s.showToast({ message: `「${remote.title?.trim() || '无标题'}」刚在其他设备上被修改，正文已更新为最新版本` })
   }
-
-  if (!isEditing || !local) {
-    /*
-     * 热更新：本地没有未落库的改动，直接用远端那一版盖上去。
-     *
-     * 但有一种情况不能一声不吭地盖：两台设备同时在改同一篇时，先保存成功的那台
-     * 会在 markSaved 之后立刻失去 isEditing，紧接着就被后到的那一版热更新覆盖——
-     * 用户眼睁睁看着自己刚敲的字消失，而冲突副本和提示都产生在**另一台**设备上，
-     * 他这边什么都没有。归档由对方负责（重复归档只会多出一条副本），
-     * 这里只补一句告知：至少让他知道字是被谁改没的，去哪儿找。
-     */
-    const justSaved = Date.now() - (recentSave.get(remote.id) ?? 0) < RECENT_SAVE_MS
-    if (justSaved && local && local.content !== remote.content) {
-      s.showToast({
-        message: `「${remote.title?.trim() || '无标题'}」刚在其他设备上被修改，正文已更新为最新版本`,
-      })
-    }
-    s.applyNote(remote)
-    return
+  s.applyNote(remote)
+  if (remote.deleted && s.activeNoteId === remote.id) {
+    s.setActive(null)
+    s.showToast({ message: `「${local?.title?.trim() || '无标题'}」已在其他设备上删除` })
   }
-
-  /*
-   * 版本对齐：本地内容不动，但接住云端的版本号，下次保存才不会再次冲突。
-   *
-   * **必须等归档真的成功了再对齐。** 对齐是同步的、必然成功；归档是网络请求、可能失败
-   * （比如网络刚恢复、服务端抖一下），而它原来失败是静默吞掉的。先对齐后归档的话，
-   * 一旦归档失败，本地就拿着一个借来的新版本号——下次保存服务端一比对 baseVersion 是最新的，
-   * 判不出冲突直接放行，云端那一版就被无声无息地覆盖了，两台设备都不会有任何提示。
-   * 实测「断网续写 → 重连」丢的就是这一版。
-   *
-   * 归档没成功就把版本号留在旧值上：下次保存自然会撞 409，那条路会重新归档一次。
-   */
-  void archiveRemote(remote).then((archived) => {
-    const cur = store().notes[remote.id]
-    if (!cur) return
-    if (archived) store().applyNote({ ...cur, version: remote.version, seq: remote.seq })
-    else store().setStatus('error')
-  })
+  return true
 }
 
 /**
@@ -323,8 +354,9 @@ function onRemoteNote(remote: Note) {
  * 会走下面那条复用分支去更新同一条副本。
  */
 function archiveRemote(remote: Note, incoming?: string): Promise<boolean> {
+  const epoch = getAccountEpoch()
   const prev = archiveChain.get(remote.id) ?? Promise.resolve()
-  const next = prev.catch(() => {}).then(() => doArchive(remote, incoming))
+  const next = prev.catch(() => {}).then(() => epoch === getAccountEpoch() ? doArchive(remote, incoming, epoch) : false)
   archiveChain.set(remote.id, next)
   void next.catch(() => {}).then(() => {
     if (archiveChain.get(remote.id) === next) archiveChain.delete(remote.id)
@@ -333,7 +365,7 @@ function archiveRemote(remote: Note, incoming?: string): Promise<boolean> {
 }
 
 /** 返回是否真的归档成功了——调用方要靠它决定敢不敢收下远端的版本号 */
-async function doArchive(remote: Note, incoming?: string): Promise<boolean> {
+async function doArchive(remote: Note, incoming: string | undefined, epoch: number): Promise<boolean> {
   const s = store()
 
   /*
@@ -373,6 +405,7 @@ async function doArchive(remote: Note, incoming?: string): Promise<boolean> {
         excerpt: remote.excerpt,
         baseVersion: copy.version,
       })
+      if (epoch !== getAccountEpoch()) return false
       s.applyNote(updated)
       activeArchive.set(remote.id, { copyId: updated.id, at: Date.now() })
       s.pushNotice({ noteId: remote.id, copyId: updated.id, copyTitle: title, at: Date.now() })
@@ -387,6 +420,7 @@ async function doArchive(remote: Note, incoming?: string): Promise<boolean> {
       conflictOf: remote.id,
       sortOrder: Date.now(),
     })
+    if (epoch !== getAccountEpoch()) return false
     s.applyNote(copy)
     activeArchive.set(remote.id, { copyId: copy.id, at: Date.now() })
     s.pushNotice({ noteId: remote.id, copyId: copy.id, copyTitle: title, at: Date.now() })
@@ -401,218 +435,128 @@ async function doArchive(remote: Note, incoming?: string): Promise<boolean> {
 /** 增量拉取；断线重连、启动、切前台时调用 */
 export async function pullDelta() {
   if (!session.token) return
-  const s = store()
+  const epoch = getAccountEpoch()
   try {
-    s.setStatus('syncing')
-    const res = await api.pull(s.lastSeq)
-
-    /*
-     * 本地还攒着改动的笔记不能走批量覆盖那条路。
-     *
-     * applyBatch 遇到这种笔记只会「留下本地内容、收下远端版本号」，既不保留远端那一版，
-     * 也不给用户任何提示——远端内容就这么没了。交给 onRemoteNote 单独走一遍，
-     * 它会把云端那一版归档成冲突副本并弹提示，和 WebSocket 推送的处理保持一致。
-     *
-     * 判断用 pendingSaves 而不是 dirtyNoteId：后者是全局单值，任何一篇保存成功
-     * 都会把它清掉（markSaved），拿它当「这篇有没有未落库的改动」并不可靠。
-     */
-    const held = res.notes.filter((n) => pendingSaves.has(n.id) && !n.deleted)
-    const plain = held.length ? res.notes.filter((n) => !pendingSaves.has(n.id) || n.deleted) : res.notes
-
-    s.applyBatch(res.folders, plain, res.seq)
-    for (const n of held) onRemoteNote(n)
-    s.setStatus('synced')
+    store().setStatus('syncing')
+    const res = await api.pull(store().lastSeq)
+    if (epoch !== getAccountEpoch()) return
+    let complete = true
+    for (const note of res.notes) if (!onRemoteNote(note)) complete = false
+    store().applyBatch(res.folders, [], complete ? res.seq : undefined)
+    if (!hasPending() && !loadQueue().length) store().setStatus('synced')
+    else if (store().status === 'syncing') store().setStatus('error')
   } catch (err) {
-    if (err instanceof AuthError) {
-      onAuthExpired(err.message)
-      return
-    }
-    s.setStatus(err instanceof OfflineError ? 'offline' : 'error')
+    if (epoch !== getAccountEpoch()) return
+    if (err instanceof AuthError) onAuthExpired(err.message)
+    else store().setStatus(err instanceof OfflineError ? 'offline' : 'error')
   }
 }
 
 /* ---------------- 笔记保存 ---------------- */
 
-/** 编辑器每次变更调用；内部做防抖，真正落库在 flushNote */
+/** 所有笔记字段使用同一份实时草稿、同一条提交队列。 */
 export function queueSave(noteId: string, patch: Patch) {
-  pendingSaves.set(noteId, patch)
-  persistPending()
+  if (accountSuspended) return
+  const local = store().notes[noteId]
+  if (!local) return
+  draftsLoaded = true
+  if (!pendingBases.has(noteId)) pendingBases.set(noteId, local.version)
+  pendingSaves.set(noteId, { ...pendingSaves.get(noteId), ...patch })
+  store().applyNote({ ...local, ...patch, updatedAt: Date.now() })
   store().setDirty(noteId)
-  saveGen.set(noteId, (saveGen.get(noteId) ?? 0) + 1)
-
+  saveFailures.delete(noteId)
+  persistPending()
   const since = saveSince.get(noteId) ?? Date.now()
   saveSince.set(noteId, since)
-
-  // 防抖的规则是「停手 700ms 才发」。可要是一直不停手，定时器就一直往后顺延，
-  // 一篇长文能写十分钟一次都没存过。所以攒够 SAVE_MAX_WAIT 就不再顺延，立刻落一次。
-  scheduleFlush(noteId, Date.now() - since >= SAVE_MAX_WAIT ? 0 : SAVE_DEBOUNCE)
+  scheduleFlush(noteId, Math.min(SAVE_DEBOUNCE, Math.max(0, SAVE_MAX_WAIT - (Date.now() - since))))
 }
 
 function scheduleFlush(noteId: string, delay: number) {
   const prev = saveTimers.get(noteId)
   if (prev) clearTimeout(prev)
-  saveTimers.set(
-    noteId,
-    setTimeout(() => {
-      saveTimers.delete(noteId)
-      void flushNote(noteId)
-    }, delay)
-  )
-}
-
-/**
- * 写回保存结果。请求飞行期间用户可能又敲了几个字，这时只接受服务端的版本号，
- * 正文仍以本地为准，否则会把刚输入的内容回退掉。
- */
-function commitSaved(noteId: string, saved: Note) {
-  const s = store()
-  recentSave.set(noteId, Date.now())
-  const stillEditing = pendingSaves.has(noteId)
-  const local = s.notes[noteId]
-  if (stillEditing && local) {
-    s.applyNote({ ...local, version: saved.version, seq: saved.seq, updatedAt: saved.updatedAt })
-    return
-  }
-  s.applyNote(saved)
-  s.markSaved()
-}
-
-/** 立即落库（切换笔记、关闭窗口、Ctrl+S 时调用） */
-export async function flushNote(noteId: string) {
-  if (savingNotes.has(noteId)) {
-    // 上一次保存还在路上。这会儿再发一个请求，带的还是同一个 baseVersion，
-    // 服务端只会判 409 —— 等于自己跟自己冲突，白白多出一条冲突副本。
-    // 内容留在 pendingSaves 里，那次请求回来后会自动补发。
-    return
-  }
-  const patch = pendingSaves.get(noteId)
-  if (!patch) return
-  pendingSaves.delete(noteId)
-  saveSince.delete(noteId)
-  persistPending()
-  const timer = saveTimers.get(noteId)
-  if (timer) {
-    clearTimeout(timer)
+  const epoch = getAccountEpoch()
+  saveTimers.set(noteId, setTimeout(() => {
     saveTimers.delete(noteId)
-  }
+    if (epoch === getAccountEpoch() && !store().authExpired) void flushNote(noteId)
+  }, delay))
+}
 
-  const s = store()
-  const local = s.notes[noteId]
-  if (!local) {
-    // 笔记在本地已经不存在了（比如被别端删掉），这份改动没有归属，丢掉
-    saveFailures.delete(noteId)
-    return
-  }
+/** 等待已有请求；请求成功后继续提交期间新增的草稿，失败则保留最新版本。 */
+export function flushNote(noteId: string): Promise<void> {
+  const existing = savingNotes.get(noteId)
+  if (existing) return existing
+  if (!pendingSaves.has(noteId) || !session.token || store().authExpired) return Promise.resolve()
+  const epoch = getAccountEpoch()
+  const task = Promise.resolve().then(() => saveDraft(noteId, epoch)).finally(() => {
+    if (savingNotes.get(noteId) === task) savingNotes.delete(noteId)
+  })
+  savingNotes.set(noteId, task)
+  return task
+}
 
-  // 记下当前世代：请求期间用户要是又敲了字，回来得补发一次
-  const gen = saveGen.get(noteId) ?? 0
-  savingNotes.add(noteId)
-  try {
-    s.setStatus('syncing')
+async function saveDraft(noteId: string, epoch: number) {
+  if (loadQueue().some((op) => op.kind === 'note.create' && op.id === noteId)) {
+    await replayQueue()
+    if (epoch !== getAccountEpoch() || loadQueue().some((op) => op.kind === 'note.create' && op.id === noteId)) return
+  }
+  while (epoch === getAccountEpoch() && pendingSaves.has(noteId)) {
+    const patch = pendingSaves.get(noteId)!
+    const local = store().notes[noteId]
+    if (!local) return // 保留可恢复草稿，不能因缓存缺失就删除。
+    const timer = saveTimers.get(noteId)
+    if (timer) clearTimeout(timer)
+    saveTimers.delete(noteId)
+    saveSince.delete(noteId)
+    store().setStatus('syncing')
     try {
-      const saved = await api.updateNote(noteId, { ...patch, baseVersion: local.version })
-      commitSaved(noteId, saved)
+      let saved: Note
+      try {
+        saved = await api.updateNote(noteId, { ...patch, baseVersion: pendingBases.get(noteId) ?? local.version })
+      } catch (err) {
+        if (epoch !== getAccountEpoch()) return
+        if (!(err instanceof ConflictError)) throw err
+        // 仅改元信息时不覆盖远端正文，无需制造正文冲突副本。
+        if (patch.content !== undefined && !(await archiveRemote(err.note, patch.content))) {
+          throw new Error('云端有更新的版本，暂时没能备份下来')
+        }
+        if (epoch !== getAccountEpoch()) return
+        saved = await api.updateNote(noteId, { ...patch, baseVersion: err.note.version })
+      }
+      if (epoch !== getAccountEpoch()) return
+      const latest = pendingSaves.get(noteId)
+      if (!latest) return // 已明确删除/丢弃的内容不被迟到回执复活。
+      const unchanged = latest === patch
+      if (unchanged) {
+        pendingSaves.delete(noteId)
+        pendingBases.delete(noteId)
+      } else pendingBases.set(noteId, saved.version)
+      store().applyNote({ ...saved, ...(unchanged ? {} : latest) })
+      // 缓存先持久化，再清除磁盘上的已确认草稿。
+      store().flushCache()
+      persistPending()
+      recentSave.set(noteId, Date.now())
       saveFailures.delete(noteId)
-      s.setStatus('synced')
+      store().markSaved()
+      store().setDirty(pendingSaves.keys().next().value ?? null)
+      store().setStatus(pendingSaves.size || loadQueue().length ? 'syncing' : 'synced')
     } catch (err) {
-      if (err instanceof ConflictError) {
-        // 云端有更新的版本：先把它归档，再用最新版本号把本地内容写上去。
-        // 归档没成功就绝不能往下走——那一步会拿云端的版本号把云端内容盖掉，
-        // 而这时它还没有任何备份，等于把别的设备刚写的东西直接删了
-        if (!(await archiveRemote(err.note, patch.content))) {
-          retainPending(noteId, patch, '云端有更新的版本，暂时没能备份下来')
-          s.setStatus('error')
-          return
-        }
-        try {
-          const saved = await api.updateNote(noteId, { ...patch, baseVersion: err.note.version })
-          commitSaved(noteId, saved)
-          s.setStatus('synced')
-        } catch {
-          retainPending(noteId, patch)
-          s.setStatus('error')
-        }
-        return
+      if (epoch !== getAccountEpoch()) return
+      // pending 始终是最新意图，失败回执绝不再写回捕获的旧 patch。
+      persistPending()
+      if (err instanceof AuthError) onAuthExpired(err.message)
+      else if (err instanceof OfflineError) store().setStatus('offline')
+      else {
+        store().setStatus('error')
+        const count = (saveFailures.get(noteId) ?? 0) + 1
+        saveFailures.set(noteId, count)
+        if (count < MAX_SAVE_RETRY) scheduleFlush(noteId, SAVE_DEBOUNCE * 2 * count)
+        else store().showToast({ message: `「${local.title?.trim() || '无标题'}」暂时没能同步，草稿已保留，请稍后重试` })
       }
-      if (err instanceof OfflineError) {
-        // 内容留着，重连时 flushAll 会补发
-        pendingSaves.set(noteId, patch)
-        persistPending()
-        s.applyNote({ ...local, ...patch, updatedAt: Date.now() })
-        s.setStatus('offline')
-        return
-      }
-      if (err instanceof AuthError) {
-        // 重试一万次也是同样的结果，还会把重试次数耗光。内容留住，停下来等用户重新登录
-        pendingSaves.set(noteId, patch)
-        persistPending()
-        s.applyNote({ ...local, ...patch, updatedAt: Date.now() })
-        onAuthExpired(err.message)
-        return
-      }
-      retainPending(noteId, patch, err instanceof Error ? err.message : undefined)
-      s.setStatus('error')
-    }
-
-    saveFailures.delete(noteId)
-  } finally {
-    savingNotes.delete(noteId)
-    if ((saveGen.get(noteId) ?? 0) !== gen && pendingSaves.has(noteId)) {
-      scheduleFlush(noteId, SAVE_DEBOUNCE)
+      return
     }
   }
 }
 
-/**
- * 保存失败后把内容留住等下次重试。但业务错误重试多半也没用，
- * 连续失败几次就放弃并告诉用户，否则它会一直卡在待保存队列里反复撞墙。
- */
-/**
- * 保存失败了，把内容留住等下次。
- *
- * **不管失败多少次，内容都必须放回去。** flushNote 一开始就把这份 patch 从
- * pendingSaves 和 localStorage 里摘走了，这里是它唯一的落脚点——原来的写法在
- * 重试次数用尽时既不放回队列、也不写回 store，还顺手 persistPending() 把盘上
- * 那份也抹了，于是用户切个笔记（setContent 用 store 里的旧内容重置编辑器）
- * 刚写的东西就永久没了，而他看到的只是一句「未能同步」，还以为过会儿会自己重发。
- *
- * 「放弃」放弃的是**自动重试**，不是内容。
- */
-function retainPending(noteId: string, patch: Patch, reason?: string) {
-  pendingSaves.set(noteId, patch)
-  const local = store().notes[noteId]
-  if (local) store().applyNote({ ...local, ...patch, updatedAt: Date.now() })
-  persistPending()
-
-  const times = (saveFailures.get(noteId) ?? 0) + 1
-  if (times >= MAX_SAVE_RETRY) {
-    // 计数归零：不再自动撞墙，但用户下次敲字、切笔记或重连时还会再试一次
-    saveFailures.delete(noteId)
-    const title = local?.title?.trim() || '无标题'
-    store().showToast({
-      message: `「${title}」暂时没能同步${reason ? '：' + reason : ''}。改动已存在本机，联网后会自动补上`,
-    })
-    return
-  }
-  saveFailures.set(noteId, times)
-  /*
-   * 主动排一次退避重试。
-   *
-   * 原来只把内容留在 pending 里就完了，指望「下次用户敲字」把它带出去——
-   * 那句「失败重试 3 次」其实从来没发生过：flushNote 的 finally 只在
-   * saveGen 变过（请求期间用户又敲了字）时才排下一次。用户打完字走开、
-   * 或者三台设备同时改撞了两次 409，内容就一直卡在本地，状态栏红着，
-   * 他也不知道该干什么才能让它重来。
-   */
-  scheduleFlush(noteId, SAVE_DEBOUNCE * 2 * times)
-}
-
-/**
- * 凭证不作数了。
- *
- * 停掉同步别再撞墙，把待发内容原样留着，然后让界面去提示用户重新登录。
- * 这里**不碰** pendingSaves、不碰缓存——用户手上可能正有没传上去的东西。
- */
 function onAuthExpired(reason: string) {
   if (store().authExpired) return
   stop()
@@ -621,28 +565,63 @@ function onAuthExpired(reason: string) {
 }
 
 export async function flushAll() {
-  for (const id of [...pendingSaves.keys()]) await flushNote(id)
+  const epoch = getAccountEpoch()
+  for (const id of new Set([...pendingSaves.keys(), ...savingNotes.keys()])) {
+    if (epoch !== getAccountEpoch()) return
+    await flushNote(id)
+  }
 }
 
-export const hasPending = () => pendingSaves.size > 0
+export const hasPending = (noteId?: string) => noteId === undefined
+  ? pendingSaves.size > 0
+  : pendingSaves.has(noteId)
 
-/**
- * 把本机攒下的东西全部丢掉：待发的改动、离线操作队列、笔记缓存。
- *
- * **只在换账号登录时调用。** 凭证失效那条路特意保住了这些东西，
- * 为的是同一个账号登回来能把改动补传上去；但换了个人登进来，
- * 这些既传不上去也不该给他看。
- */
-export function forgetLocalData() {
+function clearMemory() {
   pendingSaves.clear()
+  draftsLoaded = false
+  pendingReadBlocked = false
+  backedUpCorruptPending = null
+  pendingBases.clear()
+  savingNotes.clear()
   saveFailures.clear()
   saveSince.clear()
-  saveGen.clear()
-  for (const t of saveTimers.values()) clearTimeout(t)
+  for (const timer of saveTimers.values()) clearTimeout(timer)
   saveTimers.clear()
   activeArchive.clear()
   archiveChain.clear()
   recentSave.clear()
+  syncTask = null
+  syncAgain = false
+  replayTask = null
+}
+
+export function suspendAccount() {
+  if (!accountSuspended) {
+    const pendingSaved = persistPending()
+    const cacheSaved = store().flushCache()
+    if (!pendingSaved || !cacheSaved) throw new Error('本地草稿或缓存尚未安全写入，无法切换账号')
+  }
+  accountSuspended = true
+  stop()
+  invalidateAccountEpoch()
+  clearMemory()
+  store().setUser(null)
+}
+
+export function activateAccount(server: string, userId: string) {
+  suspendAccount()
+  activateAccountScope(server, userId)
+  store().reloadCache()
+  restorePending()
+  accountSuspended = false
+}
+
+/** 明确丢弃当前账号的本地数据（测试及用户主动清理用）。 */
+export function forgetLocalData() {
+  stop()
+  invalidateAccountEpoch()
+  clearMemory()
+  accountSuspended = false
   localStorage.removeItem(PENDING_KEY)
   localStorage.removeItem(QUEUE_KEY)
   store().reset()
@@ -650,34 +629,8 @@ export function forgetLocalData() {
 
 /* ---------------- 结构性操作（乐观更新 + 离线入队） ---------------- */
 
-/**
- * 移动、改名、改标签这类只动元信息的操作，落库之后**只收下它自己那几个字段**加版本号。
- *
- * 不能拿服务端返回的整条笔记去 applyNote：用户很可能正在打字，
- * 服务端那份 content 是他敲这几个字之前的，整条盖下去等于把刚写的退回去——
- * 切一下笔记（setContent 用 store 里的内容重置编辑器）就看得见字少了。
- */
-function applyMeta(id: string, saved: Note, fields: Partial<Note>) {
-  const s = store()
-  const cur = s.notes[id]
-  if (!cur) return
-  s.applyNote({ ...cur, ...fields, version: saved.version, seq: saved.seq, updatedAt: saved.updatedAt })
-}
-
-/**
- * 操作失败要退回去时，同样只退它自己改的字段。
- *
- * 原来是 applyNote(cur)，cur 是**操作开始那一刻**的整条快照，
- * 这期间敲的字会被一起抹掉。
- */
-function revertMeta(id: string, fields: Partial<Note>) {
-  const s = store()
-  const cur = s.notes[id]
-  if (!cur) return
-  s.applyNote({ ...cur, ...fields })
-}
-
 export async function createFolder(name: string, parentId: string | null = null) {
+  const epoch = getAccountEpoch()
   const id = newLocalId()
   const now = Date.now()
   const s = store()
@@ -687,8 +640,11 @@ export async function createFolder(name: string, parentId: string | null = null)
   })
   s.toggleExpand(parentId ?? '', true)
   try {
-    s.applyFolder(await api.createFolder({ id, name, parentId, sortOrder: now }))
+    const created = await api.createFolder({ id, name, parentId, sortOrder: now })
+    if (epoch !== getAccountEpoch()) return id
+    s.applyFolder(created)
   } catch (err) {
+    if (epoch !== getAccountEpoch()) return id
     if (err instanceof OfflineError) enqueue({ kind: 'folder.create', id, name, parentId, sortOrder: now })
     else s.dropLocal('folder', id)
   }
@@ -696,13 +652,17 @@ export async function createFolder(name: string, parentId: string | null = null)
 }
 
 export async function renameFolder(id: string, name: string) {
+  const epoch = getAccountEpoch()
   const s = store()
   const cur = s.folders[id]
   if (!cur) return
   s.applyFolder({ ...cur, name })
   try {
-    s.applyFolder(await api.updateFolder(id, { name }))
+    const updated = await api.updateFolder(id, { name })
+    if (epoch !== getAccountEpoch()) return
+    s.applyFolder(updated)
   } catch (err) {
+    if (epoch !== getAccountEpoch()) return
     if (err instanceof OfflineError) enqueue({ kind: 'folder.update', id, name })
     else s.applyFolder(cur)
   }
@@ -710,6 +670,7 @@ export async function renameFolder(id: string, name: string) {
 
 /** 移动目录，可同时给一个新的排序值（同级拖拽排序用） */
 export async function moveFolder(id: string, parentId: string | null, sortOrder?: number) {
+  const epoch = getAccountEpoch()
   const s = store()
   const cur = s.folders[id]
   if (!cur) return
@@ -717,28 +678,34 @@ export async function moveFolder(id: string, parentId: string | null, sortOrder?
   const next = sortOrder ?? cur.sortOrder
   s.applyFolder({ ...cur, parentId, sortOrder: next })
   try {
-    s.applyFolder(await api.updateFolder(id, { parentId, sortOrder: next }))
+    const updated = await api.updateFolder(id, { parentId, sortOrder: next })
+    if (epoch !== getAccountEpoch()) return
+    s.applyFolder(updated)
   } catch (err) {
+    if (epoch !== getAccountEpoch()) return
     if (err instanceof OfflineError) enqueue({ kind: 'folder.update', id, parentId, sortOrder: next })
     else s.applyFolder(cur)
   }
 }
 
 export async function deleteFolder(id: string) {
+  const epoch = getAccountEpoch()
   const s = store()
   const snapshot = s.folders[id]
   if (!snapshot) return
   try {
     const res = await api.deleteFolder(id)
+    if (epoch !== getAccountEpoch()) return
     s.applyBatch(res.folders, res.notes)
     // 记下这次连带删掉的所有条目，撤销时一起恢复
     const removed = { folders: res.folders.map((f) => f.id), notes: res.notes.map((n) => n.id) }
     s.showToast({
       message: `已删除目录「${snapshot.name}」及其中 ${res.notes.length} 篇笔记`,
       actionLabel: '撤销',
-      onAction: () => void restoreFolder(removed),
+      onAction: () => void restoreFolder(removed, epoch),
     })
   } catch (err) {
+    if (epoch !== getAccountEpoch()) return
     if (err instanceof OfflineError) {
       s.applyFolder({ ...snapshot, deleted: true })
       enqueue({ kind: 'folder.delete', id })
@@ -747,22 +714,31 @@ export async function deleteFolder(id: string) {
 }
 
 /** 撤销目录删除：逐条把软删标记翻回去 */
-async function restoreFolder(removed: { folders: string[]; notes: string[] }) {
+async function restoreFolder(removed: { folders: string[]; notes: string[] }, epoch: number) {
+  if (epoch !== getAccountEpoch()) return
   const s = store()
   for (const fid of removed.folders) {
+    if (epoch !== getAccountEpoch()) return
     const f = s.folders[fid]
     if (!f) continue
     try {
-      s.applyFolder(await api.updateFolder(fid, { name: f.name, parentId: f.parentId }))
+      const updated = await api.updateFolder(fid, { name: f.name, parentId: f.parentId })
+      if (epoch !== getAccountEpoch()) return
+      s.applyFolder(updated)
       s.applyFolder({ ...store().folders[fid], deleted: false })
     } catch {
+      if (epoch !== getAccountEpoch()) return
       /* 单条恢复失败不阻断其余条目 */
     }
   }
-  for (const nid of removed.notes) await restoreNote(nid)
+  for (const nid of removed.notes) {
+    if (epoch !== getAccountEpoch()) return
+    await restoreNote(nid)
+  }
 }
 
 export async function createNote(folderId: string | null = null, seed?: { title?: string; content?: string }) {
+  const epoch = getAccountEpoch()
   const id = newLocalId()
   const now = Date.now()
   const s = store()
@@ -778,176 +754,75 @@ export async function createNote(folderId: string | null = null, seed?: { title?
   s.setActive(id)
   if (folderId) s.toggleExpand(folderId, true)
 
-  try {
-    s.applyNote(await api.createNote({ id, folderId, title: draft.title, content: draft.content, sortOrder: now }))
-  } catch (err) {
-    /*
-     * 没建成也**不许**把本地这篇扔掉。
-     *
-     * 原来非离线错误直接 dropLocal：笔记从侧栏消失、activeNoteId 被置空、
-     * 编辑区退回空状态，用户在这一两百毫秒里敲进去的字跟着一起没，而且一声不吭。
-     * 按快捷键新建之后立刻开始写是最自然的用法，服务端只要抖一下就会踩中。
-     *
-     * 一律留住并入队：重放时先补建（空内容），随后 flushAll 会用完整正文覆盖上去，
-     * 顺序在 ws.onopen 里是排好的，内容不会丢。
-     */
-    enqueue({ kind: 'note.create', id, folderId, title: draft.title, content: draft.content, excerpt: '', sortOrder: now })
-    if (err instanceof AuthError) onAuthExpired(err.message)
-    else if (!(err instanceof OfflineError)) {
-      s.showToast({ message: '新建的笔记暂时没能同步到云端，内容已存在本机，稍后会自动重试' })
-    }
+  store().flushCache()
+  enqueue({ kind: 'note.create', id, folderId, title: draft.title, content: draft.content, excerpt: '', sortOrder: now })
+  await replayQueue()
+  if (epoch !== getAccountEpoch()) return id
+  if (loadQueue().some((op) => op.kind === 'note.create' && op.id === id)) {
+    s.showToast({ message: '新建的笔记暂时没能同步到云端，草稿已保留，稍后会自动重试' })
   }
   return id
 }
 
 /** 移动笔记，可同时给一个新的排序值（同级拖拽排序用） */
 export async function moveNote(id: string, folderId: string | null, sortOrder?: number) {
-  const s = store()
-  const cur = s.notes[id]
-  if (!cur) return
-  if (cur.folderId === folderId && sortOrder === undefined) return
-  const next = sortOrder ?? cur.sortOrder
-  const before = { folderId: cur.folderId, sortOrder: cur.sortOrder }
-  s.applyNote({ ...cur, folderId, sortOrder: next })
-  const patch = { folderId, sortOrder: next }
-  try {
-    applyMeta(id, await api.updateNote(id, { ...patch, baseVersion: cur.version }), patch)
-  } catch (err) {
-    if (err instanceof ConflictError) {
-      // 移动不涉及正文，直接基于云端最新版本重试
-      try {
-        applyMeta(id, await api.updateNote(id, { ...patch, baseVersion: err.note.version }), patch)
-      } catch {
-        revertMeta(id, before)
-      }
-    } else if (err instanceof AuthError) {
-      onAuthExpired(err.message)
-    } else if (!(err instanceof OfflineError)) {
-      revertMeta(id, before)
-    }
-  }
+  const cur = store().notes[id]
+  if (!cur || (cur.folderId === folderId && sortOrder === undefined)) return
+  queueSave(id, { folderId, sortOrder: sortOrder ?? cur.sortOrder })
+  await flushNote(id)
 }
 
 export async function deleteNote(id: string) {
-  const s = store()
-  const cur = s.notes[id]
+  const cur = store().notes[id]
   if (!cur) return
-
-  /*
-   * 先把还没落库的内容送上去，再删。
-   *
-   * 原来是直接 pendingSaves.delete()：写着写着误删（或者删完又后悔），
-   * 从回收站恢复回来的是删除前**服务端**那一版，最后敲的几句话没了——
-   * 删除是软删、给了撤销按钮，本来就是可逆的操作，不该在这儿悄悄吃掉内容。
-   * 送不上去（离线）也不要紧，pendingSaves 留着，重连时会补。
-   */
-  if (pendingSaves.has(id)) await flushNote(id)
-
-  s.applyNote({ ...s.notes[id], deleted: true })
-  if (s.activeNoteId === id) s.setActive(null)
-  try {
-    s.applyNote(await api.deleteNote(id))
-  } catch (err) {
-    if (err instanceof OfflineError) enqueue({ kind: 'note.delete', id })
-    else if (err instanceof AuthError) {
-      revertMeta(id, { deleted: false })
-      onAuthExpired(err.message)
-      return
-    } else {
-      // 只把删除标记退回去，别拿 cur 那份旧快照整条盖回来
-      revertMeta(id, { deleted: false })
-      return
-    }
-  }
-  // 删除是软删除，给一个撤销的机会，避免误点就找不回来
-  s.showToast({
-    message: `已删除「${cur.title?.trim() || '无标题'}」`,
-    actionLabel: '撤销',
-    onAction: () => {
-      void restoreNote(id)
-      store().setActive(id)
-    },
+  const epoch = getAccountEpoch()
+  queueSave(id, { deleted: true })
+  if (store().activeNoteId === id) store().setActive(null)
+  await flushNote(id)
+  if (epoch !== getAccountEpoch()) return
+  store().showToast({
+    message: `已删除「${cur.title?.trim() || '无标题'}」`, actionLabel: '撤销',
+    onAction: () => { void restoreNote(id); store().setActive(id) },
   })
 }
 
 /** 彻底删除，不可撤销 */
 export async function purgeNote(id: string) {
+  const epoch = getAccountEpoch()
   const s = store()
-  pendingSaves.delete(id)
-  persistPending()
   try {
     await api.purgeNote(id)
+    if (epoch !== getAccountEpoch()) return
+    pendingSaves.delete(id)
+    pendingBases.delete(id)
+    persistPending()
     s.dropLocal('note', id)
   } catch (err) {
-    if (!(err instanceof OfflineError)) s.dropLocal('note', id)
-    else s.showToast({ message: '离线状态下无法彻底删除，联网后再试' })
+    if (epoch !== getAccountEpoch()) return
+    if (err instanceof AuthError) onAuthExpired(err.message)
+    else s.showToast({ message: err instanceof OfflineError ? '离线状态下无法彻底删除，联网后再试' : '彻底删除失败，笔记和草稿已保留，请稍后重试' })
   }
 }
 
 /** 从回收站恢复 */
 export async function restoreNote(id: string) {
-  const s = store()
-  const cur = s.notes[id]
-  if (!cur) return
-  s.applyNote({ ...cur, deleted: false })
-  try {
-    s.applyNote(await api.updateNote(id, { deleted: false, baseVersion: cur.version }))
-  } catch (err) {
-    if (err instanceof ConflictError) {
-      try {
-        s.applyNote(await api.updateNote(id, { deleted: false, baseVersion: err.note.version }))
-      } catch {
-        s.applyNote(cur)
-      }
-    } else if (!(err instanceof OfflineError)) {
-      s.applyNote(cur)
-    }
-  }
+  const epoch = getAccountEpoch()
+  if (!store().notes[id]) return
+  queueSave(id, { deleted: false })
+  await flushNote(id)
+  if (epoch !== getAccountEpoch()) return
 }
 
-/** 改标签 */
 export async function setTags(id: string, tags: string[]) {
-  const s = store()
-  const cur = s.notes[id]
-  if (!cur) return
-  const before = { tags: cur.tags }
-  s.applyNote({ ...cur, tags })
-  try {
-    applyMeta(id, await api.updateNote(id, { tags, baseVersion: cur.version }), { tags })
-  } catch (err) {
-    if (err instanceof ConflictError) {
-      try {
-        applyMeta(id, await api.updateNote(id, { tags, baseVersion: err.note.version }), { tags })
-      } catch {
-        revertMeta(id, before)
-      }
-    } else if (err instanceof AuthError) {
-      onAuthExpired(err.message)
-    } else if (!(err instanceof OfflineError)) {
-      revertMeta(id, before)
-    }
-  }
+  if (!store().notes[id]) return
+  queueSave(id, { tags })
+  await flushNote(id)
 }
 
 export async function renameNote(id: string, title: string) {
-  const s = store()
-  const cur = s.notes[id]
-  if (!cur) return
-  const before = { title: cur.title }
-  s.applyNote({ ...cur, title })
-  try {
-    applyMeta(id, await api.updateNote(id, { title, baseVersion: cur.version }), { title })
-  } catch (err) {
-    if (err instanceof ConflictError) {
-      try {
-        applyMeta(id, await api.updateNote(id, { title, baseVersion: err.note.version }), { title })
-      } catch {
-        revertMeta(id, before)
-      }
-    } else if (err instanceof AuthError) {
-      onAuthExpired(err.message)
-    }
-  }
+  if (!store().notes[id]) return
+  queueSave(id, { title })
+  await flushNote(id)
 }
 
 /**
@@ -966,6 +841,7 @@ export function onBeforeFlush(fn: () => void) {
 
 /* 关窗前：先让钩子把话说完，再同步写进 localStorage（一定来得及），最后尽量发一次网络请求 */
 window.addEventListener('beforeunload', () => {
+  if (accountSuspended) return
   for (const fn of beforeFlushHooks) {
     try {
       fn()
@@ -973,6 +849,11 @@ window.addEventListener('beforeunload', () => {
       /* 一个钩子出错不能连累落库 */
     }
   }
-  persistPending(true)
+  persistPending()
   void flushAll()
 })
+
+if (typeof document !== 'undefined') document.addEventListener('visibilitychange', () => {
+  if (!accountSuspended && document.visibilityState === 'hidden') { persistPending(); store().flushCache() }
+})
+window.addEventListener('pagehide', () => { if (!accountSuspended) { persistPending(); store().flushCache() } })

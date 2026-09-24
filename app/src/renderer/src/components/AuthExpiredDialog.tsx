@@ -11,23 +11,30 @@ import { IconKey } from './Icons'
  * 用户看到「登录已失效」第一反应就是刚写的东西是不是没了——尤其这时候
  * 状态栏还挂着红点。所以未同步的改动有没有、有多少，都直说。
  *
- * 「重新登录」只清 token，**不动本地缓存和待发队列**：同一个账号登回来，
+ * 「重新登录」只结束当前登录会话，**不动本地缓存和待发队列**：同一个账号登回来，
  * restorePending 会把攒下的改动补发上去。
  */
 export function AuthExpiredDialog() {
   const reason = useStore((s) => s.authExpired)
   const setUser = useStore((s) => s.setUser)
   const setAuthExpired = useStore((s) => s.setAuthExpired)
+  const showToast = useStore((s) => s.showToast)
   if (!reason) return null
 
   const pending = hasPending()
 
   const relogin = () => {
-    sync.stop()
-    // 只清凭证。缓存和待发的改动留着，等他登回来自己补上去
-    session.clear()
-    setAuthExpired(null)
-    setUser(null)
+    void (async () => {
+      try {
+        await sync.suspendAccount()
+        // 账号归属另行持久化，清凭证不会丢失本地改动的所有者。
+        session.clear()
+        setAuthExpired(null)
+        setUser(null)
+      } catch {
+        showToast({ message: '本地改动尚未保存，请稍后重试' })
+      }
+    })()
   }
 
   return (

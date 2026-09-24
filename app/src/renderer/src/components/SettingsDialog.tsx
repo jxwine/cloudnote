@@ -69,7 +69,7 @@ export function SettingsDialog({ onClose, onCheckUpdate, newVersion }: Props) {
   const setShortcut = useStore((s) => s.setShortcut)
   const resetShortcuts = useStore((s) => s.resetShortcuts)
   const user = useStore((s) => s.user)
-  const reset = useStore((s) => s.reset)
+  const setUser = useStore((s) => s.setUser)
   const showToast = useStore((s) => s.showToast)
 
   useEffect(() => {
@@ -128,13 +128,17 @@ export function SettingsDialog({ onClose, onCheckUpdate, newVersion }: Props) {
     return () => window.removeEventListener('keydown', onKey, true)
   }, [recording, bindings, setShortcut, showToast])
 
-  /** 退出前先把没落库的改动推上去，别让用户丢字 */
+  /** 退出前保存本地草稿，账号归属留着供下次登录恢复。 */
   const logout = () => {
-    void sync.flushAll().finally(() => {
-      sync.stop()
-      session.clear()
-      reset()
-    })
+    void (async () => {
+      try {
+        await sync.suspendAccount()
+        session.clear()
+        setUser(null)
+      } catch {
+        showToast({ message: '本地改动尚未保存，暂时无法退出登录' })
+      }
+    })()
   }
 
   return (

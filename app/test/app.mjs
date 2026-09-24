@@ -9,6 +9,14 @@ export const SERVER = 'http://127.0.0.1:4472'
 
 /** 直接走 API 登录再刷新，比驱动登录表单稳（表单是受控组件，要绕原生 setter） */
 export async function login(dev, email, password) {
+  const appUrl = await dev.evaluate(() => location.href)
+  const parkedUrl = new URL('/manifest.webmanifest', appUrl).href
+  // 先卸载旧应用，让它的 beforeunload 在旧账号存储上完成；随后才能清空并写入新账号凭证。
+  await dev.send('Page.navigate', { url: parkedUrl })
+  await until(async () => {
+    try { return await dev.evaluate((url) => location.href === url, parkedUrl) }
+    catch { return false }
+  }, { what: `${dev.name} 离开旧应用` })
   await dev.evaluate(
     async (server, e, p) => {
       localStorage.clear()
@@ -28,6 +36,46 @@ export async function login(dev, email, password) {
     email,
     password
   )
+  await dev.send('Page.navigate', { url: appUrl })
+  await until(async () => {
+    try { return await dev.evaluate((url) => location.href === url && document.readyState === 'complete', appUrl) }
+    catch { return false }
+  }, { what: `${dev.name} 打开新账号` })
+}
+
+/** 同账号重登走真实表单，让应用自己保留并恢复该账号的本地待发草稿。 */
+export async function loginThroughForm(dev, email, password) {
+  await until(() => dev.evaluate(() => !!document.querySelector('.auth-card #email')), {
+    what: `${dev.name} 登录表单`,
+  })
+  const oldToken = await dev.evaluate(() => localStorage.getItem('cloudnote.token'))
+  await dev.evaluate((e, p) => {
+    const setInput = (id, value) => {
+      const input = document.querySelector(`.auth-card #${id}`)
+      if (!input) throw new Error(`找不到 ${id} 输入框`)
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, value)
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+    }
+    setInput('email', e)
+    setInput('password', p)
+    return 'ok'
+  }, email, password)
+  await dev.evaluate(() => {
+    const form = document.querySelector('.auth-card')
+    if (!form) throw new Error('登录表单已消失')
+    form.requestSubmit()
+    return 'ok'
+  })
+  await until(async () => {
+    const state = await dev.evaluate((previous) => ({
+      ready: !!document.querySelector('.titlebar, .m-app') &&
+        !!localStorage.getItem('cloudnote.token') &&
+        localStorage.getItem('cloudnote.token') !== previous,
+      error: document.querySelector('.auth-error')?.textContent || '',
+    }), oldToken)
+    if (state.error) throw new Error(`${dev.name} 登录失败：${state.error}`)
+    return state.ready
+  }, { what: `${dev.name} 同账号重新登录` })
 }
 
 /** 等到主界面出来、同步连上 */

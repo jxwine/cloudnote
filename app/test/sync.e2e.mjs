@@ -335,7 +335,7 @@ async function main() {
       return 'ok'
     })
     await sleep(1500)
-    await ui.login(A, email, PASSWORD)
+    await ui.loginThroughForm(A, email, PASSWORD)
     await A.reload()
     await sleep(4000)
     const A2 = await reattach(A, { urlPart: '5273', name: '设备A' })

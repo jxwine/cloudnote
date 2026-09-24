@@ -111,7 +111,6 @@ export function EditorPane({ onEditorReady, scrollRef }: Props) {
   })
   const dirtyNoteId = useStore((s) => s.dirtyNoteId)
   const notices = useStore((s) => s.notices)
-  const applyNote = useStore((s) => s.applyNote)
   const setActive = useStore((s) => s.setActive)
   const dismissNotice = useStore((s) => s.dismissNotice)
   const search = useStore((s) => s.search)
@@ -155,12 +154,8 @@ export function EditorPane({ onEditorReady, scrollRef }: Props) {
     const current = id ? useStore.getState().notes[id] : undefined
     if (!id || !current) return
 
-    const ed = editorRef.current
-    const content = ed?.getHTML() ?? current.content
-
     // 清空就让它空着，不在这儿当场重取——取标题只有 Ctrl+S 和离开笔记两个时机
-    applyNote({ ...current, title: raw })
-    sync.queueSave(id, { title: raw, content, excerpt: current.excerpt })
+    sync.queueSave(id, { title: raw })
   }
 
   /** 标题是单行的，粘进来的换行一律压成空格 */
@@ -210,10 +205,9 @@ export function EditorPane({ onEditorReady, scrollRef }: Props) {
       if (!title) return
 
       const excerpt = deriveExcerpt(ed, title)
-      applyNote({ ...cur, title, excerpt })
       sync.queueSave(noteId, { title, content: ed.getHTML(), excerpt })
     },
-    [applyNote]
+    []
   )
 
   /**
@@ -225,7 +219,8 @@ export function EditorPane({ onEditorReady, scrollRef }: Props) {
   const commitDoc = useCallback(
     (ed: Editor) => {
       const id = useStore.getState().activeNoteId
-      if (!id) return
+      // activeNoteId 可先于切换 effect 更新；此时 editor 仍是上一篇的正文。
+      if (!id || applied.current?.id !== id) return
       const html = ed.getHTML()
       applied.current = { id, content: html }
 
@@ -236,12 +231,9 @@ export function EditorPane({ onEditorReady, scrollRef }: Props) {
       // 半成品，取了就等于把中间态当成了笔记名。交给 settleTitle 在 Ctrl+S
       // 或者离开这篇笔记时再算。
       const excerpt = deriveExcerpt(ed, current.title)
-      if (current.excerpt !== excerpt) {
-        applyNote({ ...current, excerpt })
-      }
       sync.queueSave(id, { title: current.title, content: html, excerpt })
     },
-    [applyNote]
+    []
   )
 
   /*
@@ -303,8 +295,11 @@ export function EditorPane({ onEditorReady, scrollRef }: Props) {
         // 选完词了。此刻 PM 还没把最终文本写进文档，也还没清掉 composing，
         // 所以推到下一个事件循环再落库。
         compositionend: (view) => {
+          const composingNoteId = applied.current?.id
           setTimeout(() => {
-            if (!view.isDestroyed && editorRef.current) commitDoc(editorRef.current)
+            if (!view.isDestroyed && editorRef.current && applied.current?.id === composingNoteId) {
+              commitDoc(editorRef.current)
+            }
           }, 0)
           return false
         },
@@ -349,7 +344,6 @@ export function EditorPane({ onEditorReady, scrollRef }: Props) {
         // 迁移改动了正文，走一次正常保存；用户按 Ctrl+Z 可以撤回
         const html = editor.getHTML()
         applied.current = { id: note.id, content: html }
-        applyNote({ ...note, title: lifted, content: html })
         sync.queueSave(note.id, { title: lifted, content: html, excerpt: note.excerpt })
         setTitleDraft(lifted)
       } else {
@@ -362,7 +356,7 @@ export function EditorPane({ onEditorReady, scrollRef }: Props) {
     }
 
     // 同一篇笔记内容变了：只有本地没有未保存改动时才热更新，避免吞掉正在输入的字
-    const isEditing = dirtyNoteId === note.id || sync.hasPending()
+    const isEditing = dirtyNoteId === note.id || sync.hasPending(note.id)
     if (!isEditing && note.content !== applied.current?.content) {
       const { from, to } = editor.state.selection
       replaceContent(editor, note.content || '')
@@ -463,7 +457,11 @@ export function EditorPane({ onEditorReady, scrollRef }: Props) {
         const ed = editorRef.current
         const id = useStore.getState().activeNoteId
         if (ed && id) settleTitle(ed, id)
-        void sync.flushAll().then(() => useStore.getState().showToast({ message: '已保存' }))
+        void sync.flushAll().then(() => {
+          useStore.getState().showToast({
+            message: sync.hasPending() ? '仍有内容等待同步' : '已保存',
+          })
+        })
       } else if (id === 'link') {
         // 工具栏按钮的 tooltip 一直写着 Ctrl+K，之前其实没接上
         e.preventDefault()

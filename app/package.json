@@ -1,6 +1,6 @@
 {
   "name": "cloudnote",
-  "version": "1.2.5",
+  "version": "1.2.6",
   "private": true,
   "description": "云笔记 — 简洁优雅的多端同步笔记",
   "author": "cloudnote",
@@ -13,6 +13,9 @@
     "dist": "electron-vite build && electron-builder --win --x64 && node scripts/pack-hot.mjs",
     "dist:hot": "electron-vite build && node scripts/pack-hot.mjs",
     "test:sync": "node --no-warnings test/sync.e2e.mjs",
+    "test:quick-switch": "node --no-warnings test/quick-switch.e2e.mjs",
+    "test:sync:unit": "node --no-warnings test/sync.unit.cjs",
+    "test:unit": "node --no-warnings test/sync.unit.cjs && node --no-warnings test/account-storage.unit.cjs && node --no-warnings test/account-sync.unit.cjs",
     "test:responsive": "node --no-warnings test/responsive.mjs"
   },
   "dependencies": {

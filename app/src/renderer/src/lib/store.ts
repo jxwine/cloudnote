@@ -57,7 +57,11 @@ export const resolveTheme = (mode: ThemeMode): 'light' | 'dark' =>
 const readCache = (): CacheShape => {
   try {
     const raw = localStorage.getItem(CACHE_KEY)
-    if (raw) return JSON.parse(raw) as CacheShape
+    if (raw) {
+      const cache = JSON.parse(raw) as CacheShape & { cursorVersion?: number }
+      // 旧版把单条回执的 seq 当作拉取游标，需要重新对账一次补回漏掉的数据。
+      return { ...cache, lastSeq: cache.cursorVersion === 2 ? cache.lastSeq : 0 }
+    }
   } catch {
     /* 缓存损坏就当没有，下次全量拉取即可 */
   }
@@ -171,6 +175,8 @@ interface State extends CacheShape, UiShape {
   pushNotice(n: ConflictNotice): void
   dismissNotice(copyId: string): void
   markSaved(): void
+  flushCache(): boolean
+  reloadCache(): void
   reset(): void
 }
 
@@ -180,16 +186,20 @@ let uiTimer: ReturnType<typeof setTimeout> | null = null
 export const useStore = create<State>((set, get) => {
   const ui = readUi()
 
+  const flushCache = () => {
+    if (cacheTimer) clearTimeout(cacheTimer)
+    cacheTimer = null
+    const { lastSeq, folders, notes } = get()
+    try {
+      localStorage.setItem(CACHE_KEY, JSON.stringify({ lastSeq, folders, notes, cursorVersion: 2 }))
+      return true
+    } catch {
+      return false
+    }
+  }
   const persistCache = () => {
     if (cacheTimer) clearTimeout(cacheTimer)
-    cacheTimer = setTimeout(() => {
-      const { lastSeq, folders, notes } = get()
-      try {
-        localStorage.setItem(CACHE_KEY, JSON.stringify({ lastSeq, folders, notes }))
-      } catch {
-        /* 超出配额时放弃缓存，不影响在线使用 */
-      }
-    }, 400)
+    cacheTimer = setTimeout(flushCache, 400)
   }
 
   const writeUi = () => {
@@ -250,7 +260,6 @@ export const useStore = create<State>((set, get) => {
     applyFolder: (folder) => {
       set((s) => ({
         folders: { ...s.folders, [folder.id]: folder },
-        lastSeq: Math.max(s.lastSeq, folder.seq),
       }))
       persistCache()
     },
@@ -258,7 +267,6 @@ export const useStore = create<State>((set, get) => {
     applyNote: (note) => {
       set((s) => ({
         notes: { ...s.notes, [note.id]: note },
-        lastSeq: Math.max(s.lastSeq, note.seq),
       }))
       persistCache()
     },
@@ -267,21 +275,19 @@ export const useStore = create<State>((set, get) => {
       set((s) => {
         const nextFolders = { ...s.folders }
         const nextNotes = { ...s.notes }
-        let maxSeq = s.lastSeq
         for (const f of folders) {
-          nextFolders[f.id] = f
-          maxSeq = Math.max(maxSeq, f.seq)
+          if (!nextFolders[f.id] || f.version >= nextFolders[f.id].version) nextFolders[f.id] = f
         }
         for (const n of notes) {
           // 正在编辑的笔记不被后台批量拉取覆盖，避免吞掉用户正在敲的字
           if (n.id === s.dirtyNoteId && !n.deleted) {
-            nextNotes[n.id] = { ...s.notes[n.id], version: n.version, seq: n.seq }
-          } else {
+            // 未确认的草稿不能借用远端版本号，冲突必须由同步引擎处理。
+            continue
+          } else if (!nextNotes[n.id] || n.version >= nextNotes[n.id].version) {
             nextNotes[n.id] = n
           }
-          maxSeq = Math.max(maxSeq, n.seq)
         }
-        return { folders: nextFolders, notes: nextNotes, lastSeq: seq ?? maxSeq }
+        return { folders: nextFolders, notes: nextNotes, lastSeq: seq === undefined ? s.lastSeq : Math.max(s.lastSeq, seq) }
       })
       persistCache()
     },
@@ -374,8 +380,16 @@ export const useStore = create<State>((set, get) => {
     dismissNotice: (copyId) => set((s) => ({ notices: s.notices.filter((n) => n.copyId !== copyId) })),
 
     markSaved: () => set({ savingAt: Date.now(), dirtyNoteId: null }),
+    flushCache,
+    reloadCache: () => {
+      if (cacheTimer) clearTimeout(cacheTimer)
+      cacheTimer = null
+      set({ ...readCache(), activeNoteId: null, dirtyNoteId: null, notices: [], authExpired: null, toast: null })
+    },
 
     reset: () => {
+      if (cacheTimer) clearTimeout(cacheTimer)
+      cacheTimer = null
       localStorage.removeItem(CACHE_KEY)
       set({
         lastSeq: 0,

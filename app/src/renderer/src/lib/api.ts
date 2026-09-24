@@ -1,4 +1,5 @@
 import type { AdminStats, AdminUser, Folder, Note, Release, Revision, User } from './types'
+import { getActiveAccountScope, initializeAccountScope, invalidateAccountEpoch } from './accountStorage'
 
 const LS = {
   server: 'cloudnote.server',
@@ -13,6 +14,7 @@ const LS = {
  * 没注入就用本地，方便开发和自建。登录页始终可以手动改。
  */
 export const DEFAULT_SERVER = import.meta.env.VITE_CLOUDNOTE_SERVER || 'http://localhost:4471'
+initializeAccountScope(DEFAULT_SERVER)
 
 /** 设备标识：用于让服务端跳过变更发起方，避免自己收到自己的广播 */
 export const clientId = (() => {
@@ -29,22 +31,31 @@ export const session = {
     return localStorage.getItem(LS.server) || DEFAULT_SERVER
   },
   set server(v: string) {
-    localStorage.setItem(LS.server, v.replace(/\/+$/, ''))
+    const next = v.replace(/\/+$/, '')
+    if (next !== this.server) invalidateAccountEpoch()
+    localStorage.setItem(LS.server, next)
   },
   get token() {
     return localStorage.getItem(LS.token)
   },
   get user(): User | null {
+    if (!this.token) return null
     const raw = localStorage.getItem(LS.user)
-    return raw ? (JSON.parse(raw) as User) : null
+    if (!raw) return null
+    const user = JSON.parse(raw) as User
+    const scope = getActiveAccountScope()
+    if (!scope || scope.userId !== user.id || scope.server !== this.server.replace(/\/+$/, '')) return null
+    return user
   },
   save(token: string, user: User) {
     localStorage.setItem(LS.token, token)
     localStorage.setItem(LS.user, JSON.stringify(user))
+    invalidateAccountEpoch()
   },
   clear() {
     localStorage.removeItem(LS.token)
     localStorage.removeItem(LS.user)
+    invalidateAccountEpoch()
   },
 }
 
@@ -79,7 +90,7 @@ export class AuthError extends Error {
 
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
   const headers: Record<string, string> = { 'x-client-id': clientId }
-  const token = session.token
+  const token = path === '/api/auth/login' || path === '/api/auth/register' ? null : session.token
   if (token) headers.authorization = 'Bearer ' + token
   if (body !== undefined) headers['content-type'] = 'application/json'
 
