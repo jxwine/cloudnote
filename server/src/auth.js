@@ -81,6 +81,14 @@ const findRawById = db.prepare('SELECT * FROM users WHERE id = ?')
 const updatePassword = db.prepare('UPDATE users SET password_hash = ? WHERE id = ?')
 const updatePasswordByAdmin = db.prepare('UPDATE users SET password_hash = ?, password_reset_at = ? WHERE id = ?')
 
+/** 阅读密码重设只验证账号，不使现有登录失效。 */
+export async function verifyAccountPassword(userId, password) {
+  const row = findRawById.get(userId)
+  if (!row || typeof password !== 'string' || password.length > 1024 ||
+      !await bcrypt.compare(password, row.password_hash))
+    throw httpError(403, '账号密码不正确')
+}
+
 /** 管理员重置密码：不校验旧密码，因为用户就是忘了才找上来的 */
 export function resetPassword(userId, newPassword) {
   const row = findRawById.get(userId)

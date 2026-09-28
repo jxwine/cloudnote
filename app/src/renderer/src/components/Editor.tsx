@@ -26,6 +26,9 @@ import langCss from 'highlight.js/lib/languages/css'
 import langMd from 'highlight.js/lib/languages/markdown'
 
 import { useStore, currentBindings } from '@/lib/store'
+import { blockedLock, readingTitle } from '@/lib/readingLock'
+import { ReadingLockPane, readingLockMenuActions } from './ReadingLock'
+import { useContextMenu } from './ContextMenu'
 import { comboFromEvent, findShortcut } from '@/lib/shortcuts'
 import { setLink } from '@/lib/links'
 import type { Note } from '@/lib/types'
@@ -42,7 +45,7 @@ import { isDesktop } from '@/lib/platform'
 import { isTouch } from '@/lib/viewport'
 import { EditorToolbar } from './EditorToolbar'
 import { BubbleToolbar } from './BubbleToolbar'
-import { IconClose, IconNote, IconHistory, IconExport } from './Icons'
+import { IconClose, IconNote, IconHistory, IconExport, IconLock } from './Icons'
 
 /** 允许交给系统浏览器打开的协议。笔记内容可能来自粘贴或另一端，javascript: 之类必须挡住 */
 const SAFE_LINK = /^(https?|mailto|ftp):/i
@@ -102,7 +105,17 @@ interface Props {
   scrollRef: React.RefObject<HTMLDivElement>
 }
 
-export function EditorPane({ onEditorReady, scrollRef }: Props) {
+export function EditorPane(props: Props) {
+  const targetId = useStore((s) => {
+    const id = s.activeNoteId
+    return id && blockedLock(s, { kind: 'note', id }) ? id : null
+  })
+  if (targetId) return <ReadingLockPane target={{ kind: 'note', id: targetId }} />
+  return <UnlockedEditorPane {...props} />
+}
+
+function UnlockedEditorPane({ onEditorReady, scrollRef }: Props) {
+  const lockMenu = useContextMenu()
   const activeNoteId = useStore((s) => s.activeNoteId)
   const note = useStore((s) => {
     // 已软删的笔记按「没打开」处理：本地缓存里还留着它，但不该继续显示
@@ -245,7 +258,12 @@ export function EditorPane({ onEditorReady, scrollRef }: Props) {
     if (!id) return
     const settle = () => {
       const ed = editorRef.current
-      if (ed) settleTitle(ed, id)
+      if (ed && !ed.isDestroyed && applied.current?.id === id) {
+        if (ed.view.composing) commitDoc(ed)
+        const input = titleRef.current
+        if (input && titleIme.isComposing()) sync.queueSave(id, { title: oneLine(input.value) })
+        settleTitle(ed, id)
+      }
     }
     // 走 sync 的钩子而不是自己监听 beforeunload：直接监听会排在 sync 那个后面，
     // 结算完再没人把它落库，标题就丢了
@@ -498,6 +516,7 @@ export function EditorPane({ onEditorReady, scrollRef }: Props) {
 
   return (
     <div className="editor-pane">
+      {lockMenu.node}
       {/* 查找按钮只给网页版：手机没有 Ctrl+F；桌面端工具栏保持原样 */}
       <EditorToolbar editor={editor} onFind={isDesktop ? undefined : openFind} />
       <BubbleToolbar editor={editor} />
@@ -527,6 +546,10 @@ export function EditorPane({ onEditorReady, scrollRef }: Props) {
               </>
             )}
             <span className="note-meta-gap" />
+            <button className="meta-action" title="阅读密码" onClick={(e) => lockMenu.openAt(e.currentTarget, readingLockMenuActions({ kind: 'note', id: note.id }))}>
+              <IconLock size={14} />
+              阅读密码
+            </button>
             <button className="meta-action" title="历史版本" onClick={() => setShowHistory(true)}>
               <IconHistory size={14} />
               历史版本
@@ -571,7 +594,7 @@ export function EditorPane({ onEditorReady, scrollRef }: Props) {
               <div className="notice-body">
                 其他设备在你编辑期间改了这篇笔记。你的内容原样保留，云端那一版已存为{' '}
                 <span className="notice-link" onClick={() => setActive(n.copyId)}>
-                  {n.copyTitle}
+                  {readingTitle(useStore.getState(), { kind: 'note', id: n.copyId })}
                 </span>
                 。
               </div>

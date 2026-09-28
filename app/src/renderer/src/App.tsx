@@ -5,6 +5,8 @@ import { comboFromEvent, findShortcut, formatCombo } from '@/lib/shortcuts'
 import * as sync from '@/lib/sync'
 import { LoginView } from './components/LoginView'
 import { Sidebar } from './components/Sidebar'
+import { ReadingLockDialog, ReadingLockPane } from './components/ReadingLock'
+import { blockedLock } from '@/lib/readingLock'
 import { EditorPane } from './components/Editor'
 import { Outline } from './components/Outline'
 import { SyncChip } from './components/SyncChip'
@@ -159,6 +161,8 @@ function Workspace() {
   const leftWidth = useStore((s) => s.leftWidth)
   const rightWidth = useStore((s) => s.rightWidth)
   const activeNoteId = useStore((s) => s.activeNoteId)
+  const activeFolderId = useStore((s) => s.activeFolderId)
+  const noteLocked = useStore((s) => !!s.activeNoteId && !!blockedLock(s, { kind: 'note', id: s.activeNoteId }))
   const user = useStore((s) => s.user)
   const sidebarView = useStore((s) => s.sidebarView)
   const setSidebarView = useStore((s) => s.setSidebarView)
@@ -291,7 +295,7 @@ function Workspace() {
         </aside>
         {leftShown && <Resizer side="left" />}
 
-        <EditorPane onEditorReady={onEditorReady} scrollRef={scrollRef} />
+        {activeFolderId ? <ReadingLockPane target={{ kind: 'folder', id: activeFolderId }} /> : <EditorPane onEditorReady={onEditorReady} scrollRef={scrollRef} />}
 
         {rightShown && !rightAsDrawer && <Resizer side="right" />}
         <aside
@@ -303,9 +307,9 @@ function Workspace() {
           </div>
           <div className="panel-body">
             <Outline
-              editor={editor}
+              editor={activeFolderId || noteLocked ? null : editor}
               scrollRef={scrollRef}
-              noteId={activeNoteId}
+              noteId={activeFolderId || noteLocked ? null : activeNoteId}
               onNavigate={rightAsDrawer ? () => setDrawer(null) : undefined}
             />
           </div>
@@ -319,6 +323,7 @@ function Workspace() {
 
       <Toast />
       <PromptDialog />
+      <ReadingLockDialog />
       {quickJump && <QuickJump onClose={() => setQuickJump(false)} />}
       {settings && (
         <SettingsDialog

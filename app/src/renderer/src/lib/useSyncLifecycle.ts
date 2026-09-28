@@ -1,5 +1,6 @@
 import { useEffect } from 'react'
 import * as sync from './sync'
+import { useStore } from './store'
 
 /**
  * 同步引擎的生命周期：登录后启动；窗口重新获得焦点时补一次增量拉取，防止睡眠期间漏消息。
@@ -11,15 +12,18 @@ export function useSyncLifecycle() {
     // 用 syncNow 而不是裸的 pullDelta：必须先把本地攒着的改动送出去再拉远端，
     // 否则合盖再打开这一下就会把别的设备刚写的内容静默盖掉
     const onFocus = () => void sync.syncNow()
+    const onBlur = () => useStore.getState().relock()
     const onOnline = () => {
       sync.stop()
       sync.start()
     }
     window.addEventListener('focus', onFocus)
+    window.addEventListener('blur', onBlur)
     window.addEventListener('online', onOnline)
     return () => {
       sync.stop()
       window.removeEventListener('focus', onFocus)
+      window.removeEventListener('blur', onBlur)
       window.removeEventListener('online', onOnline)
     }
   }, [])

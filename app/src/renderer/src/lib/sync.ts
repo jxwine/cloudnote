@@ -1,6 +1,7 @@
 import { api, session, clientId, AuthError, ConflictError, OfflineError, newLocalId } from './api'
 import { useStore } from './store'
-import type { Note } from './types'
+import type { Note, LockTarget } from './types'
+import { blockedLock, onBeforeLock, readingTitle } from './readingLock'
 import { activateAccountScope, getAccountEpoch, invalidateAccountEpoch } from './accountStorage'
 
 const QUEUE_KEY = 'cloudnote.queue'
@@ -127,6 +128,7 @@ function loadQueue(): QueuedOp[] {
     return []
   }
 }
+export const hasQueuedOperations = () => loadQueue().length > 0
 function saveQueue(q: QueuedOp[]) {
   localStorage.setItem(QUEUE_KEY, JSON.stringify(q))
 }
@@ -333,16 +335,26 @@ function onRemoteNote(remote: Note): boolean {
   if (local && remote.version <= local.version) return true
   // 在途请求也是草稿；接收远端消息不能改变它的基准版本。
   // 等提交时由服务端 409 返回最新内容，归档成功后才允许覆盖。
-  if (pendingSaves.has(remote.id)) return false
+  if (pendingSaves.has(remote.id)) {
+    // 阅读权限须立即生效，即使正文仍有草稿；草稿基准不借用远端版本。
+    if (local && remote.seq >= local.seq) s.applyNote({ ...local, folderId: remote.folderId, readingLock: remote.readingLock, seq: remote.seq })
+    return false
+  }
   if (Date.now() - (recentSave.get(remote.id) ?? 0) < RECENT_SAVE_MS && local && local.content !== remote.content) {
-    s.showToast({ message: `「${remote.title?.trim() || '无标题'}」刚在其他设备上被修改，正文已更新为最新版本` })
+    const title = readingTitle({ ...s, notes: { ...s.notes, [remote.id]: remote } }, { kind: 'note', id: remote.id })
+    s.showToast({ message: `「${title}」刚在其他设备上被修改，正文已更新为最新版本` })
   }
   s.applyNote(remote)
   if (remote.deleted && s.activeNoteId === remote.id) {
     s.setActive(null)
-    s.showToast({ message: `「${local?.title?.trim() || '无标题'}」已在其他设备上删除` })
+    s.showToast({ message: `「${readingTitle(store(), { kind: 'note', id: remote.id })}」已在其他设备上删除` })
   }
   return true
+}
+
+export function applyReadingLockNote(note: Note) {
+  const draft = pendingSaves.get(note.id)
+  store().applyNote({ ...note, ...draft })
 }
 
 /**
@@ -397,7 +409,9 @@ async function doArchive(remote: Note, incoming: string | undefined, epoch: numb
   const title = `${remote.title || '无标题'}（云端版本 ${stamp}）`
 
   try {
-    if (existing && Date.now() - existing.at < ARCHIVE_REUSE_MS && s.notes[existing.copyId]) {
+    if (existing && Date.now() - existing.at < ARCHIVE_REUSE_MS && s.notes[existing.copyId]
+      && s.notes[existing.copyId].readingLock?.revision === remote.readingLock?.revision
+      && s.notes[existing.copyId].folderId === remote.folderId) {
       const copy = s.notes[existing.copyId]
       const updated = await api.updateNote(copy.id, {
         title,
@@ -550,7 +564,7 @@ async function saveDraft(noteId: string, epoch: number) {
         const count = (saveFailures.get(noteId) ?? 0) + 1
         saveFailures.set(noteId, count)
         if (count < MAX_SAVE_RETRY) scheduleFlush(noteId, SAVE_DEBOUNCE * 2 * count)
-        else store().showToast({ message: `「${local.title?.trim() || '无标题'}」暂时没能同步，草稿已保留，请稍后重试` })
+        else store().showToast({ message: `「${readingTitle(store(), { kind: 'note', id: noteId })}」暂时没能同步，草稿已保留，请稍后重试` })
       }
       return
     }
@@ -629,7 +643,27 @@ export function forgetLocalData() {
 
 /* ---------------- 结构性操作（乐观更新 + 离线入队） ---------------- */
 
+function requireReadable(target: LockTarget): boolean {
+  if (!blockedLock(store(), target)) return true
+  store().showToast({ message: '请先解锁后再操作' })
+  return false
+}
+
+function requireFolderContents(id: string): boolean {
+  const s = store()
+  const ids = new Set([id])
+  let size = 0
+  while (size !== ids.size) {
+    size = ids.size
+    for (const f of Object.values(s.folders)) if (f.parentId && ids.has(f.parentId)) ids.add(f.id)
+  }
+  for (const fid of ids) if (!requireReadable({ kind: 'folder', id: fid })) return false
+  for (const n of Object.values(s.notes)) if (n.folderId && ids.has(n.folderId) && !requireReadable({ kind: 'note', id: n.id })) return false
+  return true
+}
+
 export async function createFolder(name: string, parentId: string | null = null) {
+  if (parentId && !requireReadable({ kind: 'folder', id: parentId })) return ''
   const epoch = getAccountEpoch()
   const id = newLocalId()
   const now = Date.now()
@@ -652,6 +686,7 @@ export async function createFolder(name: string, parentId: string | null = null)
 }
 
 export async function renameFolder(id: string, name: string) {
+  if (!requireReadable({ kind: 'folder', id })) return
   const epoch = getAccountEpoch()
   const s = store()
   const cur = s.folders[id]
@@ -670,6 +705,7 @@ export async function renameFolder(id: string, name: string) {
 
 /** 移动目录，可同时给一个新的排序值（同级拖拽排序用） */
 export async function moveFolder(id: string, parentId: string | null, sortOrder?: number) {
+  if (!requireReadable({ kind: 'folder', id }) || (parentId && !requireReadable({ kind: 'folder', id: parentId }))) return
   const epoch = getAccountEpoch()
   const s = store()
   const cur = s.folders[id]
@@ -689,6 +725,7 @@ export async function moveFolder(id: string, parentId: string | null, sortOrder?
 }
 
 export async function deleteFolder(id: string) {
+  if (!requireFolderContents(id)) return
   const epoch = getAccountEpoch()
   const s = store()
   const snapshot = s.folders[id]
@@ -700,7 +737,7 @@ export async function deleteFolder(id: string) {
     // 记下这次连带删掉的所有条目，撤销时一起恢复
     const removed = { folders: res.folders.map((f) => f.id), notes: res.notes.map((n) => n.id) }
     s.showToast({
-      message: `已删除目录「${snapshot.name}」及其中 ${res.notes.length} 篇笔记`,
+      message: `已删除目录「${readingTitle(store(), { kind: 'folder', id })}」及其中 ${res.notes.length} 篇笔记`,
       actionLabel: '撤销',
       onAction: () => void restoreFolder(removed, epoch),
     })
@@ -738,6 +775,7 @@ async function restoreFolder(removed: { folders: string[]; notes: string[] }, ep
 }
 
 export async function createNote(folderId: string | null = null, seed?: { title?: string; content?: string }) {
+  if (folderId && !requireReadable({ kind: 'folder', id: folderId })) return ''
   const epoch = getAccountEpoch()
   const id = newLocalId()
   const now = Date.now()
@@ -766,6 +804,7 @@ export async function createNote(folderId: string | null = null, seed?: { title?
 
 /** 移动笔记，可同时给一个新的排序值（同级拖拽排序用） */
 export async function moveNote(id: string, folderId: string | null, sortOrder?: number) {
+  if (!requireReadable({ kind: 'note', id }) || (folderId && !requireReadable({ kind: 'folder', id: folderId }))) return
   const cur = store().notes[id]
   if (!cur || (cur.folderId === folderId && sortOrder === undefined)) return
   queueSave(id, { folderId, sortOrder: sortOrder ?? cur.sortOrder })
@@ -773,6 +812,7 @@ export async function moveNote(id: string, folderId: string | null, sortOrder?: 
 }
 
 export async function deleteNote(id: string) {
+  if (!requireReadable({ kind: 'note', id })) return
   const cur = store().notes[id]
   if (!cur) return
   const epoch = getAccountEpoch()
@@ -781,13 +821,14 @@ export async function deleteNote(id: string) {
   await flushNote(id)
   if (epoch !== getAccountEpoch()) return
   store().showToast({
-    message: `已删除「${cur.title?.trim() || '无标题'}」`, actionLabel: '撤销',
+    message: `已删除「${readingTitle(store(), { kind: 'note', id })}」`, actionLabel: '撤销',
     onAction: () => { void restoreNote(id); store().setActive(id) },
   })
 }
 
 /** 彻底删除，不可撤销 */
 export async function purgeNote(id: string) {
+  if (!requireReadable({ kind: 'note', id })) return
   const epoch = getAccountEpoch()
   const s = store()
   try {
@@ -806,6 +847,7 @@ export async function purgeNote(id: string) {
 
 /** 从回收站恢复 */
 export async function restoreNote(id: string) {
+  if (!requireReadable({ kind: 'note', id })) return
   const epoch = getAccountEpoch()
   if (!store().notes[id]) return
   queueSave(id, { deleted: false })
@@ -814,12 +856,14 @@ export async function restoreNote(id: string) {
 }
 
 export async function setTags(id: string, tags: string[]) {
+  if (!requireReadable({ kind: 'note', id })) return
   if (!store().notes[id]) return
   queueSave(id, { tags })
   await flushNote(id)
 }
 
 export async function renameNote(id: string, title: string) {
+  if (!requireReadable({ kind: 'note', id })) return
   if (!store().notes[id]) return
   queueSave(id, { title })
   await flushNote(id)
@@ -839,6 +883,13 @@ export function onBeforeFlush(fn: () => void) {
   return () => beforeFlushHooks.delete(fn)
 }
 
+onBeforeLock(() => {
+  if (accountSuspended) return
+  for (const fn of beforeFlushHooks) { try { fn() } catch { /* 仍保留已进入队列的草稿 */ } }
+  persistPending()
+  store().flushCache()
+})
+
 /* 关窗前：先让钩子把话说完，再同步写进 localStorage（一定来得及），最后尽量发一次网络请求 */
 window.addEventListener('beforeunload', () => {
   if (accountSuspended) return
@@ -854,6 +905,6 @@ window.addEventListener('beforeunload', () => {
 })
 
 if (typeof document !== 'undefined') document.addEventListener('visibilitychange', () => {
-  if (!accountSuspended && document.visibilityState === 'hidden') { persistPending(); store().flushCache() }
+  if (!accountSuspended && document.visibilityState === 'hidden') { store().relock(); persistPending(); store().flushCache() }
 })
-window.addEventListener('pagehide', () => { if (!accountSuspended) { persistPending(); store().flushCache() } })
+window.addEventListener('pagehide', () => { if (!accountSuspended) { store().relock(); persistPending(); store().flushCache() } })

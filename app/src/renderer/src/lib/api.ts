@@ -1,4 +1,4 @@
-import type { AdminStats, AdminUser, Folder, Note, Release, Revision, User } from './types'
+import type { AdminStats, AdminUser, Folder, Note, Release, Revision, User, LockTarget } from './types'
 import { getActiveAccountScope, initializeAccountScope, invalidateAccountEpoch } from './accountStorage'
 
 const LS = {
@@ -114,6 +114,8 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 }
 
 export const api = {
+  setReadingLock: (target: LockTarget, input: { password: string | null; accountPassword?: string; baseLockRevision: string | null }) =>
+    request<Note | Folder>('PUT', `/api/${target.kind === 'note' ? 'notes' : 'folders'}/${encodeURIComponent(target.id)}/reading-lock`, input),
   register: (email: string, password: string, displayName?: string) =>
     request<{ token: string; user: User }>('POST', '/api/auth/register', {
       email,

@@ -1,6 +1,8 @@
 import { useMemo, useState } from 'react'
 import { useStore, buildTree, type TreeNode } from '@/lib/store'
 import * as sync from '@/lib/sync'
+import { blockedLock, canReadNote, hasReadingLock, readingTitle } from '@/lib/readingLock'
+import { ReadingLockPane, readingLockMenuActions } from '../ReadingLock'
 import type { Note } from '@/lib/types'
 import { useContextMenu } from '../ContextMenu'
 import { SearchResults } from '../SearchResults'
@@ -9,7 +11,7 @@ import { Trash } from '../Trash'
 import { SyncChip } from '../SyncChip'
 import { FolderSheet } from './FolderSheet'
 import { openNotePage } from './MobileShell'
-import { IconBack, IconClose, IconFolder, IconFolderOpen, IconPlus, IconSearch, IconSettings, IconTrash } from '../Icons'
+import { IconLock, IconUnlock, IconBack, IconClose, IconFolder, IconFolderOpen, IconPlus, IconSearch, IconSettings, IconTrash } from '../Icons'
 
 /** 卡片上的日期：今年只给月日，往年带年份 */
 export function cardDate(ts: number): string {
@@ -44,6 +46,7 @@ interface Props {
 }
 
 export function MobileHome({ folderId, setFolderId, onOpenSettings }: Props) {
+  const lockGrants = useStore((s) => s.lockGrants)
   const notes = useStore((s) => s.notes)
   const folders = useStore((s) => s.folders)
   const sidebarView = useStore((s) => s.sidebarView)
@@ -62,21 +65,28 @@ export function MobileHome({ folderId, setFolderId, onOpenSettings }: Props) {
   // 目录被别的设备删了：退回全部笔记
   const scopedFolder = folder && !folder.deleted ? folder : undefined
 
+  const folderLocked = !!scopedFolder && !!blockedLock(useStore.getState(), { kind: 'folder', id: scopedFolder.id })
+
   const cards = useMemo(() => {
-    let list = Object.values(notes).filter((n) => !n.deleted)
+    let list = Object.values(notes).filter((n) => {
+      if (n.deleted) return false
+      const blocking = blockedLock(useStore.getState(), { kind: 'note', id: n.id })
+      // 从回收站单独恢复的笔记可能仍位于已删除目录，保留匿名入口以便再次解锁。
+      return blocking?.kind !== 'folder' || folders[blocking.id]?.deleted
+    })
     if (sidebarView === 'tags') {
-      list = tagFilter ? list.filter((n) => n.tags?.includes(tagFilter)) : []
+      list = tagFilter ? list.filter((n) => canReadNote(useStore.getState(), n) && n.tags?.includes(tagFilter)) : []
     } else if (scopedFolder) {
       const ids = descendants(tree, scopedFolder.id)
       list = list.filter((n) => n.folderId && ids.has(n.folderId))
     }
     return list.sort((a, b) => b.updatedAt - a.updatedAt)
-  }, [notes, sidebarView, tagFilter, scopedFolder, tree])
+  }, [notes, folders, lockGrants, sidebarView, tagFilter, scopedFolder, tree])
 
   const title =
     sidebarView === 'trash' ? '回收站'
     : sidebarView === 'tags' ? (tagFilter ? `#${tagFilter}` : '标签')
-    : scopedFolder ? scopedFolder.name
+    : scopedFolder ? readingTitle(useStore.getState(), { kind: 'folder', id: scopedFolder.id })
     : '所有笔记'
 
   /** 标签筛选 / 回收站 / 目录内：左上角给一个返回上一级 */
@@ -98,12 +108,15 @@ export function MobileHome({ folderId, setFolderId, onOpenSettings }: Props) {
   }
 
   const cardActions = (note: Note) => [
-    { label: '移出目录', disabled: !note.folderId, onSelect: () => void sync.moveNote(note.id, null) },
-    { label: '删除笔记', danger: true, onSelect: () => void sync.deleteNote(note.id) },
+    ...readingLockMenuActions({ kind: 'note', id: note.id }),
+    { label: '移出目录', disabled: !note.folderId || !canReadNote(useStore.getState(), note), onSelect: () => void sync.moveNote(note.id, null) },
+    { label: '删除笔记', disabled: !canReadNote(useStore.getState(), note), danger: true, onSelect: () => void sync.deleteNote(note.id) },
   ]
 
   let body: React.ReactNode
-  if (search.trim()) {
+  if (folderLocked && scopedFolder) {
+    body = <ReadingLockPane target={{ kind: 'folder', id: scopedFolder.id }} />
+  } else if (search.trim()) {
     body = <div className="m-list"><SearchResults query={search.trim()} /></div>
   } else if (sidebarView === 'trash') {
     body = <div className="m-list"><Trash /></div>
@@ -126,9 +139,10 @@ export function MobileHome({ folderId, setFolderId, onOpenSettings }: Props) {
             onContextMenu={(e) => menu.open(e, cardActions(n))}
           >
             <span className={'m-card-title' + (n.title?.trim() ? '' : ' is-untitled')}>
-              {n.title?.trim() || '无标题'}
+              {hasReadingLock(useStore.getState(), { kind: 'note', id: n.id }) && (canReadNote(useStore.getState(), n) ? <IconUnlock size={13} className="tree-lock" /> : <IconLock size={13} className="tree-lock" />)}
+              {readingTitle(useStore.getState(), { kind: 'note', id: n.id })}
             </span>
-            {n.excerpt && <span className="m-card-excerpt">{n.excerpt}</span>}
+            {canReadNote(useStore.getState(), n) && n.excerpt && <span className="m-card-excerpt">{n.excerpt}</span>}
             <span className="m-card-date">{cardDate(n.updatedAt)}</span>
           </button>
         ))}
@@ -160,7 +174,7 @@ export function MobileHome({ folderId, setFolderId, onOpenSettings }: Props) {
           {title}
         </h1>
 
-        {sidebarView !== 'trash' && (
+        {sidebarView !== 'trash' && !folderLocked && (
           <label className="m-search">
             <IconSearch size={17} />
             <input
@@ -180,7 +194,7 @@ export function MobileHome({ folderId, setFolderId, onOpenSettings }: Props) {
         {body}
       </div>
 
-      {sidebarView !== 'trash' && (
+      {sidebarView !== 'trash' && !folderLocked && (
         <button className="m-fab" onClick={() => void create()} aria-label="新建笔记">
           <IconPlus size={30} />
         </button>
@@ -196,6 +210,7 @@ export function MobileHome({ folderId, setFolderId, onOpenSettings }: Props) {
             setSheet(false)
           }}
           onView={(view) => {
+            setFolderId(null)
             setSidebarView(view)
             setSheet(false)
           }}

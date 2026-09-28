@@ -7,10 +7,11 @@ import { IconChevron, IconFolder, IconNote } from './Icons'
 export function SearchResults({ query }: { query: string }) {
   const notes = useStore((s) => s.notes)
   const folders = useStore((s) => s.folders)
+  const lockGrants = useStore((s) => s.lockGrants)
   const activeNoteId = useStore((s) => s.activeNoteId)
   const jumpToSearchHit = useStore((s) => s.jumpToSearchHit)
 
-  const hits = useMemo(() => searchNotes(query, notes, folders), [query, notes, folders])
+  const hits = useMemo(() => searchNotes(query, notes, folders, 200, lockGrants), [query, notes, folders, lockGrants])
 
   if (!hits.length) {
     return <div className="tree-empty">没有匹配「{query}」的笔记</div>

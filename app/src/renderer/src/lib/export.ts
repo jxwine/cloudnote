@@ -3,6 +3,7 @@ import { folderPath } from './search'
 import { useStore } from './store'
 import type { Folder, Note } from './types'
 import { isDesktop, desktop, isNative } from './platform'
+import { blockedLock, canReadNote } from './readingLock'
 
 /**
  * 浏览器里没有 Electron 的保存对话框，退回到普通下载。
@@ -51,9 +52,15 @@ async function nativeShare(name: string, content: string) {
 
 /** 导出单篇 */
 export async function exportNote(note: Note) {
+  const store = useStore.getState()
+  const current = store.notes[note.id]
+  if (!current || !canReadNote(store, current)) {
+    store.showToast({ message: '请先解锁笔记及所在目录，再导出' })
+    return
+  }
+  note = current
   const name = `${safeFileName(note.title)}.md`
   const content = noteToMarkdownFile(note)
-  const store = useStore.getState()
 
   if (!isDesktop) {
     browserDownload(name, content)
@@ -73,10 +80,17 @@ export async function exportNote(note: Note) {
  * 同名笔记加序号，不至于互相覆盖。
  */
 export async function exportAll(opts: { folderId?: string | null } = {}) {
-  const { notes, folders, showToast } = useStore.getState()
+  const store = useStore.getState()
+  const { notes, folders, showToast } = store
   const all = Object.values(notes).filter((n) => !n.deleted)
   const scoped =
     opts.folderId === undefined ? all : all.filter((n) => inFolderTree(n, opts.folderId!, folders))
+
+  if ((opts.folderId && blockedLock(store, { kind: 'folder', id: opts.folderId })) ||
+      scoped.some((note) => !canReadNote(store, note))) {
+    showToast({ message: '导出范围包含锁定的笔记或目录，请全部解锁后再导出' })
+    return
+  }
 
   if (!scoped.length) {
     showToast({ message: '没有可导出的笔记' })

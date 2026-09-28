@@ -9,6 +9,7 @@
     "start": "node --no-warnings src/index.js",
     "dev": "node --no-warnings --watch src/index.js",
     "test:e2e": "node --no-warnings test/e2e.js",
+    "test:reading-lock": "node --no-warnings --test test/reading-lock.js",
     "gc": "node --no-warnings scripts/gc.js"
   },
   "engines": {

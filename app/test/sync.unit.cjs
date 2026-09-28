@@ -89,13 +89,16 @@ function harness(overrides = {}, storage = new Map()) {
     getAccountEpoch: () => epoch,
     invalidateAccountEpoch: () => ++epoch,
   }
+  const readingLock = load('app/src/renderer/src/lib/readingLock.ts', {})
   const store = load('app/src/renderer/src/lib/store.ts', {
     zustand: { create }, './api': deps, './accountStorage': accountStorage,
+    './readingLock': readingLock,
     './shortcuts': { SHORTCUTS: [], resolveBindings: () => [] },
     './viewport': { readViewport: () => 'desktop' },
   })
   const sync = load('app/src/renderer/src/lib/sync.ts', {
     './api': deps, './store': store, './accountStorage': accountStorage,
+    './readingLock': readingLock,
   })
   const state = () => store.useStore.getState()
   const pending = id => {
@@ -103,7 +106,7 @@ function harness(overrides = {}, storage = new Map()) {
     const entry = raw && JSON.parse(raw).find(row => row[0] === id)
     return entry?.[1]
   }
-  return { api, sync, state, storage, localStorage, pending, runTimers, OfflineError, ConflictError,
+  return { api, sync, state, storage, localStorage, pending, runTimers, OfflineError, ConflictError, readingLock,
     bumpEpoch: () => ++epoch }
 }
 
@@ -476,6 +479,110 @@ for (const [name, change, field, value] of [
     assert.ok(sent.length > 0)
   })
 }
+
+const lock = (revision = 'lock-r1') => ({
+  salt: '00'.repeat(16), hash: '00'.repeat(32), iterations: 210000, revision,
+})
+const folder = (id, parentId = null, readingLock = null, version = 1, seq = 1) => ({
+  id, name: id, parentId, readingLock, version, seq, deleted: false,
+  sortOrder: 1, createdAt: 1, updatedAt: seq,
+})
+
+test('远端将待保存笔记移入锁定目录时立即阻断查看且保留草稿', async () => {
+  const h = harness({ pull: async () => ({
+    seq: 3, folders: [], notes: [note('N', 'remote', 2, 3, { folderId: 'F' })],
+  }) })
+  h.state().applyFolder(folder('F', null, lock()))
+  h.state().applyNote(note('N', 'original'))
+  h.state().setActive('N')
+  h.sync.queueSave('N', { content: 'draft' })
+  await h.sync.pullDelta()
+  assert.equal(h.state().notes.N.folderId, 'F')
+  assert.equal(h.state().notes.N.content, 'draft')
+  assert.equal(h.readingLock.canReadNote(h.state(), h.state().notes.N), false)
+  assert.equal(h.pending('N').content, 'draft')
+  assert.equal(h.state().notes.N.version, 1, '不能借用远端正文版本跳过冲突检查')
+})
+
+test('在途保存的迟到回执不得回滚新的锁与目录关系', async () => {
+  const saved = deferred()
+  const h = harness({
+    updateNote: () => saved.promise,
+    pull: async () => ({ seq: 5, folders: [], notes: [note('N', 'draft', 3, 5, { folderId: 'F', readingLock: lock() })] }),
+  })
+  h.state().applyFolder(folder('F', null, lock('folder-r1')))
+  h.state().applyNote(note('N', 'original'))
+  h.state().setActive('N')
+  h.sync.queueSave('N', { content: 'draft' })
+  const saving = h.sync.flushNote('N')
+  await tick()
+  await h.sync.pullDelta()
+  saved.resolve(note('N', 'draft', 2, 4, { readingLock: null }))
+  await saving
+  assert.equal(h.state().notes.N.folderId, 'F')
+  assert.equal(h.state().notes.N.readingLock.revision, 'lock-r1')
+  assert.equal(h.state().notes.N.seq, 5)
+  assert.equal(h.readingLock.canReadNote(h.state(), h.state().notes.N), false)
+  assert.equal(h.sync.hasPending(), false)
+})
+
+test('远端将活动笔记移出目录后旧目录授权立即撤销', async () => {
+  const h = harness()
+  h.state().applyFolder(folder('F', null, lock()))
+  h.state().applyNote(note('N', 'body', 1, 1, { folderId: 'F' }))
+  h.state().setActive('N')
+  h.state().lockGrants['folder:F'] = 'lock-r1'
+  h.state().applyNote(note('N', 'body', 2, 3, { folderId: null }))
+  assert.equal(h.state().lockGrants['folder:F'], undefined)
+  h.state().openFolder('F')
+  assert.equal(h.state().activeFolderId, 'F', '重新进入旧目录必须显示解锁页')
+})
+
+test('移动活动笔记的祖先目录也会撤销已离开范围的授权', async () => {
+  const h = harness()
+  h.state().applyFolder(folder('F', null, lock()))
+  h.state().applyFolder(folder('C', 'F'))
+  h.state().applyNote(note('N', 'body', 1, 1, { folderId: 'C' }))
+  h.state().setActive('N')
+  h.state().lockGrants['folder:F'] = 'lock-r1'
+  h.state().applyFolder(folder('C', null, null, 2, 4))
+  assert.equal(h.state().lockGrants['folder:F'], undefined)
+  assert.equal(h.readingLock.canReadNote(h.state(), h.state().notes.N), true)
+  h.state().openFolder('F')
+  assert.equal(h.state().activeFolderId, 'F')
+})
+
+test('批量同步更新锁和目录时只保留当前范围有效授权', async () => {
+  const h = harness()
+  h.state().applyFolder(folder('F', null, lock()))
+  h.state().applyFolder(folder('C', 'F', lock('child-r1')))
+  h.state().applyNote(note('N', 'body', 1, 1, { folderId: 'C' }))
+  h.state().setActive('N')
+  h.state().lockGrants['folder:F'] = 'lock-r1'
+  h.state().lockGrants['folder:C'] = 'child-r1'
+  h.state().applyBatch([folder('C', null, lock('child-r2'), 2, 4)], [], 4)
+  assert.equal(Object.keys(h.state().lockGrants).length, 0)
+  assert.equal(h.readingLock.blockedLock(h.state(), { kind: 'note', id: 'N' }).id, 'C')
+})
+
+test('有未保存正文时远端重设独立密码立即撤销旧授权', async () => {
+  const h = harness({ pull: async () => ({
+    seq: 3, folders: [], notes: [note('N', 'remote', 2, 3, { readingLock: lock('new-revision') })],
+  }) })
+  h.state().applyNote(note('N', 'original', 1, 1, { readingLock: lock() }))
+  h.state().setActive('N')
+  h.state().lockGrants['note:N'] = 'lock-r1'
+  h.sync.queueSave('N', { content: 'draft' })
+  await h.sync.pullDelta()
+  assert.equal(h.state().notes.N.readingLock.revision, 'new-revision')
+  assert.equal(h.state().lockGrants['note:N'], undefined)
+  assert.equal(h.state().notes.N.content, 'draft')
+  assert.equal(h.readingLock.canReadNote(h.state(), h.state().notes.N), false)
+  h.state().flushCache()
+  const stored = JSON.parse(h.storage.get('cloudnote.cache'))
+  assert.equal(stored.lockGrants, undefined, '授权不能持久化')
+  assert.equal(stored.lockScope, undefined)
+})
 
 ;(async () => {
   let failed = 0

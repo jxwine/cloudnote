@@ -1,8 +1,10 @@
 import { useMemo } from 'react'
 import { useStore, buildTree, type TreeNode } from '@/lib/store'
+import { blockedLock, canReadNote, hasReadingLock, readingTitle } from '@/lib/readingLock'
+import { readingLockMenuActions } from '../ReadingLock'
 import * as sync from '@/lib/sync'
 import { useContextMenu } from '../ContextMenu'
-import { IconFolder, IconFolderPlus, IconMore, IconNote, IconTag, IconTrash } from '../Icons'
+import { IconLock, IconUnlock, IconFolder, IconFolderPlus, IconMore, IconNote, IconTag, IconTrash } from '../Icons'
 
 interface Props {
   /** browse：首页的目录面板，带标签 / 回收站入口和目录管理；pick：只挑一个目录（移动笔记用） */
@@ -28,7 +30,7 @@ function flatten(tree: TreeNode[]): Row[] {
     for (const n of nodes) {
       const row: Row = { node: n, depth, count: 0 }
       rows.push(row)
-      row.count = n.notes.length + walk(n.children, depth + 1)
+      row.count = blockedLock(useStore.getState(), { kind: 'folder', id: n.folder.id }) ? 0 : n.notes.filter((note) => canReadNote(useStore.getState(), note)).length + walk(n.children, depth + 1)
       total += row.count
     }
     return total
@@ -39,6 +41,7 @@ function flatten(tree: TreeNode[]): Row[] {
 
 /** 从底部滑出的目录面板 */
 export function FolderSheet({ mode, current, onPick, onView, onClose }: Props) {
+  const lockGrants = useStore((s) => s.lockGrants)
   const folders = useStore((s) => s.folders)
   const notes = useStore((s) => s.notes)
   const prompt = useStore((s) => s.prompt)
@@ -47,10 +50,10 @@ export function FolderSheet({ mode, current, onPick, onView, onClose }: Props) {
   const { rows, total, trashCount } = useMemo(() => {
     const { tree, rootNotes } = buildTree(folders, notes)
     const rows = flatten(tree)
-    const total = rootNotes.length + rows.filter((r) => r.depth === 0).reduce((a, r) => a + r.count, 0)
+    const total = rootNotes.filter((note) => canReadNote(useStore.getState(), note)).length + rows.filter((r) => r.depth === 0).reduce((a, r) => a + r.count, 0)
     const trashCount = Object.values(notes).filter((n) => n.deleted).length
     return { rows, total, trashCount }
-  }, [folders, notes])
+  }, [folders, notes, lockGrants])
 
   const rename = async (id: string, name: string) => {
     const next = await prompt({ title: '重命名目录', initial: name, confirmLabel: '保存' })
@@ -58,14 +61,15 @@ export function FolderSheet({ mode, current, onPick, onView, onClose }: Props) {
   }
 
   const folderActions = (row: Row) => [
+    ...readingLockMenuActions({ kind: 'folder', id: row.node.folder.id }),
     {
-      label: '新建子目录',
+      label: '新建子目录', disabled: !!blockedLock(useStore.getState(), { kind: 'folder', id: row.node.folder.id }),
       icon: <IconFolderPlus size={15} />,
       onSelect: () => void sync.createFolder('新建目录', row.node.folder.id),
     },
-    { label: '重命名', onSelect: () => void rename(row.node.folder.id, row.node.folder.name) },
+    { label: '重命名', disabled: !!blockedLock(useStore.getState(), { kind: 'folder', id: row.node.folder.id }), onSelect: () => void rename(row.node.folder.id, row.node.folder.name) },
     'separator' as const,
-    { label: '删除目录', danger: true, onSelect: () => void sync.deleteFolder(row.node.folder.id) },
+    { label: '删除目录', disabled: !!blockedLock(useStore.getState(), { kind: 'folder', id: row.node.folder.id }), danger: true, onSelect: () => void sync.deleteFolder(row.node.folder.id) },
   ]
 
   const rowClass = (active: boolean) => 'm-sheet-row' + (active ? ' is-active' : '')
@@ -103,11 +107,13 @@ export function FolderSheet({ mode, current, onPick, onView, onClose }: Props) {
               <button
                 className="m-sheet-main"
                 style={{ paddingLeft: 16 + r.depth * 18 }}
+                disabled={mode === 'pick' && !!blockedLock(useStore.getState(), { kind: 'folder', id: r.node.folder.id })}
                 onClick={() => onPick(r.node.folder.id)}
               >
                 <IconFolder size={18} className="m-sheet-icon" />
-                <span className="m-sheet-label">{r.node.folder.name}</span>
-                <span className="m-sheet-count">{r.count}</span>
+                <span className="m-sheet-label">{readingTitle(useStore.getState(), { kind: 'folder', id: r.node.folder.id })}</span>
+                {hasReadingLock(useStore.getState(), { kind: 'folder', id: r.node.folder.id }) ? (blockedLock(useStore.getState(), { kind: 'folder', id: r.node.folder.id }) ? <IconLock size={14} /> : <IconUnlock size={14} />) : null}
+                {!blockedLock(useStore.getState(), { kind: 'folder', id: r.node.folder.id }) && <span className="m-sheet-count">{r.count}</span>}
               </button>
               {mode === 'browse' && (
                 <button

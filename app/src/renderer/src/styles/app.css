@@ -4496,3 +4496,24 @@ html[data-touch] .spectrum-hue,
 html[data-touch] .spectrum-alpha {
   touch-action: none;
 }
+
+/* 阅读锁：保留当前侧栏，正文区域仅显示居中的密码入口。 */
+.reading-lock-pane { flex: 1; min-width: 0; display: flex; align-items: center; justify-content: center; background: var(--surface); padding: 32px 24px; }
+.reading-lock-form { width: 280px; max-width: 100%; display: flex; flex-direction: column; align-items: stretch; text-align: center; }
+.reading-lock-mark { align-self: center; color: var(--text-3); margin-bottom: 18px; }
+.reading-lock-form h1 { font-size: 19px; font-weight: 500; margin: 0; overflow-wrap: anywhere; }
+.reading-lock-hint { color: var(--text-2); font-size: 12px; line-height: 1.7; margin: 12px 0 22px; }
+.reading-lock-form input, .reading-lock-dialog input { width: 100%; height: 38px; background: var(--surface); border: 1px solid var(--accent-line); border-radius: 5px; padding: 0 12px; outline: none; }
+.reading-lock-form input:focus, .reading-lock-dialog input:focus { border-color: var(--accent); }
+.reading-lock-form > .btn-primary { width: 100%; min-height: 38px; margin-top: 10px; }
+.reading-lock-links { display: flex; justify-content: center; align-items: center; gap: 28px; margin-top: 22px; color: var(--accent); font-size: 12px; }
+.reading-lock-links span { height: 12px; width: 1px; background: var(--line); }
+.reading-lock-links button { padding: 4px 0; }
+.reading-lock-error { margin: 12px 0 0; color: var(--danger); font-size: 12px; line-height: 1.6; }
+.reading-lock-dialog { width: 380px; max-width: calc(100vw - 32px); }
+.reading-lock-dialog label { display: block; color: var(--text-2); font-size: 12px; margin: 14px 0; }
+.reading-lock-dialog label input { display: block; margin-top: 7px; color: var(--text); }
+.reading-lock-overlay { z-index: 500; }
+.tree-lock { flex-shrink: 0; color: var(--text-3); margin-left: 3px; }
+.m-home .reading-lock-pane { min-height: 55vh; background: transparent; }
+.m-card-title .tree-lock { margin-right: 6px; }

@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react'
 import type { Editor } from '@tiptap/react'
 import { activeHeading, extractOutline, scrollToPos } from '@/lib/outline'
 import type { OutlineItem } from '@/lib/types'
+import { useStore } from '@/lib/store'
+import { canReadNote } from '@/lib/readingLock'
 
 interface Props {
   editor: Editor | null
@@ -12,16 +14,20 @@ interface Props {
 }
 
 export function Outline({ editor, scrollRef, noteId, onNavigate }: Props) {
+  const readable = useStore((s) => !!noteId && !!s.notes[noteId] && canReadNote(s, s.notes[noteId]))
   const [items, setItems] = useState<OutlineItem[]>([])
   const [active, setActive] = useState<string | null>(null)
 
   /* 文档结构变化时重算大纲 */
   useEffect(() => {
-    if (!editor) {
+    if (!editor || !readable) {
       setItems([])
       return
     }
-    const refresh = () => setItems(extractOutline(editor))
+    const refresh = () => {
+      const state = useStore.getState()
+      setItems(noteId && state.notes[noteId] && canReadNote(state, state.notes[noteId]) ? extractOutline(editor) : [])
+    }
     refresh()
 
     // 听 transaction 而不是 update：别端推来的改动是用
@@ -36,12 +42,12 @@ export function Outline({ editor, scrollRef, noteId, onNavigate }: Props) {
     return () => {
       editor.off('transaction', onTransaction)
     }
-  }, [editor, noteId])
+  }, [editor, noteId, readable])
 
   /* 跟随滚动高亮当前所在的标题 */
   useEffect(() => {
     const el = scrollRef.current
-    if (!el || !editor || !items.length) {
+    if (!el || !editor || !items.length || !readable) {
       setActive(null)
       return
     }
@@ -56,11 +62,13 @@ export function Outline({ editor, scrollRef, noteId, onNavigate }: Props) {
       cancelAnimationFrame(frame)
       el.removeEventListener('scroll', onScroll)
     }
-  }, [editor, items, scrollRef])
+  }, [editor, items, scrollRef, readable])
 
   if (!noteId) {
     return <div className="tree-empty">打开一篇笔记后，这里会列出它的标题。</div>
   }
+
+  if (!readable) return <div className="tree-empty">解锁笔记后查看大纲。</div>
 
   if (!items.length) {
     return (

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useStore } from '@/lib/store'
 import { folderPath } from '@/lib/search'
+import { canReadNote } from '@/lib/readingLock'
 import { IconChevron, IconFolder, IconNote, IconSearch } from './Icons'
 
 /** 子序列匹配：输入的字符按顺序出现即可，不必连续。「同纪」能命中「同步方案评审纪要」 */
@@ -29,6 +30,7 @@ function fuzzyScore(text: string, query: string): number {
 export function QuickJump({ onClose }: { onClose: () => void }) {
   const notes = useStore((s) => s.notes)
   const folders = useStore((s) => s.folders)
+  const lockGrants = useStore((s) => s.lockGrants)
   const setActive = useStore((s) => s.setActive)
   const [query, setQuery] = useState('')
   const [cursor, setCursor] = useState(0)
@@ -36,7 +38,7 @@ export function QuickJump({ onClose }: { onClose: () => void }) {
   const listRef = useRef<HTMLDivElement>(null)
 
   const hits = useMemo(() => {
-    const live = Object.values(notes).filter((n) => !n.deleted)
+    const live = Object.values(notes).filter((n) => !n.deleted && canReadNote({ notes, folders, lockGrants }, n))
     const q = query.trim()
     return live
       .map((note) => ({ note, score: fuzzyScore(note.title || '无标题', q) }))
@@ -44,7 +46,7 @@ export function QuickJump({ onClose }: { onClose: () => void }) {
       // 没输入时按最近修改排，输入了按匹配度排
       .sort((a, b) => (q ? b.score - a.score : b.note.updatedAt - a.note.updatedAt))
       .slice(0, 30)
-  }, [notes, query])
+  }, [notes, folders, lockGrants, query])
 
   useEffect(() => setCursor(0), [query])
   useEffect(() => inputRef.current?.focus(), [])

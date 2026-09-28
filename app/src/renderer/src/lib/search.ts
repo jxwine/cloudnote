@@ -1,4 +1,5 @@
 import type { Folder, Note } from './types'
+import { canReadNote } from './readingLock'
 
 export interface SearchHit {
   note: Note
@@ -88,14 +89,15 @@ export function searchNotes(
   query: string,
   notes: Record<string, Note>,
   folders: Record<string, Folder>,
-  limit = 200
+  limit = 200,
+  lockGrants: Record<string, string> = {}
 ): SearchHit[] {
   const q = query.trim().toLowerCase()
   if (!q) return []
 
   const hits: (SearchHit & { titleHit: boolean })[] = []
   for (const note of Object.values(notes)) {
-    if (note.deleted) continue
+    if (note.deleted || !canReadNote({ notes, folders, lockGrants }, note)) continue
     const title = (note.title || '').toLowerCase()
     const body = cachedPlainText(note.id, note.content || '', note.updatedAt)
     const bodyLower = body.toLowerCase()

@@ -1,6 +1,8 @@
 import { useCallback, useRef, useState } from 'react'
 import type { Editor } from '@tiptap/react'
 import { useStore } from '@/lib/store'
+import { blockedLock } from '@/lib/readingLock'
+import { readingLockMenuActions } from '../ReadingLock'
 import * as sync from '@/lib/sync'
 import { EditorPane } from '../Editor'
 import { Outline } from '../Outline'
@@ -17,6 +19,7 @@ import { IconBack, IconList, IconMore } from '../Icons'
  */
 export function MobileNote() {
   const activeNoteId = useStore((s) => s.activeNoteId)
+  const locked = useStore((s) => !!s.activeNoteId && !!blockedLock(s, { kind: 'note', id: s.activeNoteId }))
   const [editor, setEditor] = useState<Editor | null>(null)
   const [outline, setOutline] = useState(false)
   const [move, setMove] = useState(false)
@@ -25,10 +28,11 @@ export function MobileNote() {
   const onEditorReady = useCallback((e: Editor | null) => setEditor(e), [])
 
   const actions = [
-    { label: '移动到目录…', onSelect: () => setMove(true) },
+    ...(activeNoteId ? readingLockMenuActions({ kind: 'note', id: activeNoteId }) : []),
+    { label: '移动到目录…', disabled: locked, onSelect: () => setMove(true) },
     'separator' as const,
     {
-      label: '删除笔记',
+      label: '删除笔记', disabled: locked,
       danger: true,
       onSelect: () => {
         if (activeNoteId) void sync.deleteNote(activeNoteId)
@@ -47,7 +51,7 @@ export function MobileNote() {
         </button>
         <SyncChip />
         <span className="m-top-gap" />
-        <button className="m-icon" onClick={() => setOutline(true)} aria-label="大纲">
+        <button className="m-icon" disabled={locked} onClick={() => setOutline(true)} aria-label="大纲">
           <IconList size={22} />
         </button>
         <button className="m-icon" onClick={(e) => menu.openAt(e.currentTarget, actions)} aria-label="更多">
@@ -57,7 +61,7 @@ export function MobileNote() {
 
       <EditorPane onEditorReady={onEditorReady} scrollRef={scrollRef} />
 
-      {outline && (
+      {outline && !locked && (
         <>
           <div className="m-sheet-backdrop" onClick={() => setOutline(false)} />
           <div className="m-sheet" role="dialog" aria-label="大纲">
@@ -70,7 +74,7 @@ export function MobileNote() {
         </>
       )}
 
-      {move && activeNoteId && (
+      {move && !locked && activeNoteId && (
         <FolderSheet
           mode="pick"
           current={useStore.getState().notes[activeNoteId]?.folderId ?? null}

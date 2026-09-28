@@ -110,6 +110,9 @@ function addColumn(table, column, definition) {
 // 标签存成 JSON 数组字符串。笔记的标签通常只有几个，
 // 单独开表要多一次 join，收益抵不上复杂度。
 addColumn('notes', 'tags', "TEXT NOT NULL DEFAULT '[]'")
+// 阅读锁是独立同步的元数据，正文/历史恢复不能覆盖它。
+addColumn('notes', 'reading_lock', 'TEXT')
+addColumn('folders', 'reading_lock', 'TEXT')
 addColumn('users', 'disabled', 'INTEGER NOT NULL DEFAULT 0')
 addColumn('users', 'last_active_at', 'INTEGER')
 // 管理员重置密码的时间：早于它签出的 token 一律作废，不然被踢下线的设备拿旧 token 一重连又回来了

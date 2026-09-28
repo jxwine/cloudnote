@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useStore } from '@/lib/store'
 import { useSyncLifecycle } from '@/lib/useSyncLifecycle'
 import { Toast } from '../Toast'
+import { ReadingLockDialog } from '../ReadingLock'
 import { PromptDialog } from '../PromptDialog'
 import { AuthExpiredDialog } from '../AuthExpiredDialog'
 import { SettingsDialog } from '../SettingsDialog'
@@ -23,6 +24,7 @@ export const openNotePage = () => {
 
 /** 回首页。是从首页推进来的就退一步，直接带着 #/note 打开的就直接改 hash */
 export const closeNotePage = () => {
+  useStore.getState().relock()
   if (history.state?.fromHome) history.back()
   else location.replace('#')
 }
@@ -39,7 +41,18 @@ export function MobileShell({ route }: { route: string }) {
   // 安卓壳里查更新（网页手机档里这个 hook 什么都不做）
   const { update, setUpdate, available, manualCheck } = useUpdateCheck()
   /** 首页正在看的目录。放在这一层：进了编辑页首页会卸载，回来还得在那个目录里 */
-  const [folderId, setFolderId] = useState<string | null>(null)
+  const [folderId, updateFolderId] = useState<string | null>(null)
+
+  const setFolderId = (id: string | null) => {
+    useStore.getState().relock()
+    useStore.getState().setActive(null)
+    if (id) useStore.getState().openFolder(id)
+    updateFolderId(id)
+  }
+
+  useEffect(() => {
+    if (route !== NOTE_ROUTE) useStore.getState().relock()
+  }, [route])
 
   const onNote = route === NOTE_ROUTE && !!activeNoteId
 
@@ -63,6 +76,7 @@ export function MobileShell({ route }: { route: string }) {
 
       <Toast />
       <PromptDialog />
+      <ReadingLockDialog />
       {settings && (
         <SettingsDialog
           onClose={() => setSettings(false)}

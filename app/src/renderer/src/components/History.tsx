@@ -1,7 +1,9 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { api } from '@/lib/api'
 import { useStore } from '@/lib/store'
 import { htmlToMarkdown } from '@/lib/markdown'
+import { canReadNote } from '@/lib/readingLock'
+import { getAccountEpoch } from '@/lib/accountStorage'
 import type { Note, Revision } from '@/lib/types'
 import { IconClose, IconHistory, IconRestore } from './Icons'
 
@@ -13,6 +15,14 @@ const stamp = (ts: number) => {
 
 /** 历史版本：左边一列时间点，右边预览那一版的内容 */
 export function History({ note, onClose }: { note: Note; onClose: () => void }) {
+  const epoch = useRef(getAccountEpoch())
+  const readable = useStore((s) => getAccountEpoch() === epoch.current &&
+    !!s.notes[note.id] && canReadNote(s, s.notes[note.id]))
+  const stillReadable = () => {
+    const state = useStore.getState()
+    return getAccountEpoch() === epoch.current &&
+      !!state.notes[note.id] && canReadNote(state, state.notes[note.id])
+  }
   const [list, setList] = useState<Revision[] | null>(null)
   const [picked, setPicked] = useState<string | null>(null)
   const [preview, setPreview] = useState<string>('')
@@ -22,23 +32,43 @@ export function History({ note, onClose }: { note: Note; onClose: () => void }) 
   const applyNote = useStore((s) => s.applyNote)
 
   useEffect(() => {
+    let cancelled = false
+    setList(null)
+    setPicked(null)
+    setPreview('')
+    setError('')
+    if (!readable) return
     api
       .revisions(note.id)
       .then((r) => {
+        if (cancelled || !stillReadable()) return
         setList(r.revisions)
         if (r.revisions[0]) setPicked(r.revisions[0].id)
       })
-      .catch((e) => setError(e instanceof Error ? e.message : '读取历史失败'))
-  }, [note.id])
+      .catch((e) => {
+        if (!cancelled && stillReadable()) setError(e instanceof Error ? e.message : '读取历史失败')
+      })
+    return () => { cancelled = true }
+  }, [note.id, readable])
 
   useEffect(() => {
-    if (!picked) return
+    let cancelled = false
     setPreview('')
+    if (!picked || !readable) return
     api
       .revision(picked)
-      .then((r) => setPreview(htmlToMarkdown(r.content) || '（这一版是空的）'))
-      .catch(() => setPreview('读取失败'))
-  }, [picked])
+      .then((r) => {
+        if (!cancelled && stillReadable()) setPreview(htmlToMarkdown(r.content) || '（这一版是空的）')
+      })
+      .catch(() => {
+        if (!cancelled && stillReadable()) setPreview('读取失败')
+      })
+    return () => { cancelled = true }
+  }, [picked, readable, note.id])
+
+  useEffect(() => {
+    if (!readable) onClose()
+  }, [readable, onClose])
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose()
@@ -47,18 +77,22 @@ export function History({ note, onClose }: { note: Note; onClose: () => void }) 
   }, [onClose])
 
   const restore = async () => {
-    if (!picked || busy) return
+    if (!picked || busy || !stillReadable()) return
     setBusy(true)
     try {
       const restored = await api.restoreRevision(picked)
+      if (!stillReadable()) return
       applyNote(restored)
       showToast({ message: '已恢复到该版本，当前内容也已存为一个版本，可以再退回来' })
       onClose()
     } catch (e) {
+      if (!stillReadable()) return
       setError(e instanceof Error ? e.message : '恢复失败')
       setBusy(false)
     }
   }
+
+  if (!readable) return null
 
   return (
     <div className="overlay" onMouseDown={onClose}>

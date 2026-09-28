@@ -46,12 +46,14 @@ function harness(storage = new Map()) {
   }
   const account = load('accountStorage', {})
   const api = load('api', { './accountStorage': account })
+  const readingLock = load('readingLock', {})
   const store = load('store', {
     zustand: { create }, './api': api,
+    './readingLock': readingLock,
     './shortcuts': { SHORTCUTS: [], resolveBindings: () => [] },
     './viewport': { readViewport: () => 'desktop' },
   })
-  const sync = load('sync', { './api': api, './store': store, './accountStorage': account })
+  const sync = load('sync', { './api': api, './store': store, './accountStorage': account, './readingLock': readingLock })
   return { storage, account, api, sync, state: () => store.useStore.getState() }
 }
 

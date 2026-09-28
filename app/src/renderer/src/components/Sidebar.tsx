@@ -3,6 +3,8 @@ import { useStore, useBindings, buildTree, type TreeNode } from '@/lib/store'
 import { formatCombo } from '@/lib/shortcuts'
 import * as sync from '@/lib/sync'
 import { exportAll, exportNote } from '@/lib/export'
+import { blockedLock, canReadNote, hasReadingLock, readingTitle } from '@/lib/readingLock'
+import { readingLockMenuActions } from './ReadingLock'
 import type { Note } from '@/lib/types'
 import {
   canDrop, orderBetween, parentOf, positionInRow, siblingsOf,
@@ -14,7 +16,7 @@ import { SearchResults } from './SearchResults'
 import { Trash } from './Trash'
 import { TagList } from './TagList'
 import {
-  IconChevron, IconFolder, IconFolderOpen, IconNote, IconPlus, IconFolderPlus,
+  IconLock, IconUnlock, IconChevron, IconFolder, IconFolderOpen, IconNote, IconPlus, IconFolderPlus,
   IconSearch, IconTrash, IconPencil, IconClose, IconMore, IconTag, IconExport, IconChevron as IconBack,
 } from './Icons'
 
@@ -24,6 +26,7 @@ const HOVER_EXPAND_MS = 700
 
 export function Sidebar() {
   const bindings = useBindings()
+  const lockGrants = useStore((s) => s.lockGrants)
   const folders = useStore((s) => s.folders)
   const notes = useStore((s) => s.notes)
   const search = useStore((s) => s.search)
@@ -36,7 +39,7 @@ export function Sidebar() {
   const setTagFilter = useStore((s) => s.setTagFilter)
   const tagCount = useStore((s) => {
     const seen = new Set<string>()
-    for (const n of Object.values(s.notes)) if (!n.deleted) for (const t of n.tags ?? []) seen.add(t)
+    for (const n of Object.values(s.notes)) if (!n.deleted && canReadNote(s, n)) for (const t of n.tags ?? []) seen.add(t)
     return seen.size
   })
 
@@ -55,10 +58,10 @@ export function Sidebar() {
     () =>
       tagFilter
         ? Object.values(notes)
-            .filter((n) => !n.deleted && (n.tags ?? []).includes(tagFilter))
+            .filter((n) => !n.deleted && canReadNote(useStore.getState(), n) && (n.tags ?? []).includes(tagFilter))
             .sort((a, b) => b.updatedAt - a.updatedAt)
         : null,
-    [notes, tagFilter]
+    [notes, folders, tagFilter, lockGrants]
   )
 
   const query = search.trim()
@@ -86,7 +89,8 @@ export function Sidebar() {
   const commitDrop = (target: DropTarget) => {
     const payload = draggingRef.current
     endDrag()
-    if (!payload) return
+    if (!payload || blockedLock(useStore.getState(), payload)) return
+    if (target.id && blockedLock(useStore.getState(), { kind: target.kind === 'note' ? 'note' : 'folder', id: target.id })) return
 
     if (target.position === 'inside') {
       if (!canDrop(payload, target.id, folders)) return
@@ -115,7 +119,7 @@ export function Sidebar() {
   const rowDropProps = (id: string, kind: 'note' | 'folder') => ({
     onDragOver: (e: React.DragEvent) => {
       const payload = draggingRef.current
-      if (!payload || payload.id === id) return
+      if (!payload || payload.id === id || blockedLock(useStore.getState(), { kind, id })) return
       const position = positionInRow(e.clientY, e.currentTarget.getBoundingClientRect(), kind === 'folder')
       const parentId = position === 'inside' ? id : parentOf({ id, kind }, folders, notes)
       if (!canDrop(payload, parentId, folders)) return
@@ -175,8 +179,9 @@ export function Sidebar() {
   const dragProps = (payload: DragPayload) => ({
     // 触屏上 draggable 会抢走长按，contextmenu 就不来了；而且 iOS 根本不支持 HTML5 拖拽。
     // 手机上排序/归档走菜单里的「移出目录」，拖拽只留给鼠标
-    draggable: !renaming && !isTouch,
+    draggable: !renaming && !isTouch && !blockedLock(useStore.getState(), payload),
     onDragStart: (e: React.DragEvent) => {
+      if (blockedLock(useStore.getState(), payload)) { e.preventDefault(); return }
       e.dataTransfer.effectAllowed = 'move'
       e.dataTransfer.setData(DND_MIME, JSON.stringify(payload))
       draggingRef.current = payload
@@ -356,22 +361,29 @@ function FolderRow(props: {
   menu: ReturnType<typeof useContextMenu>
 }) {
   const { node, depth, dropInside, dragging, renaming, dragProps, dropProps, menu } = props
-  const expanded = useStore((s) => s.expanded[node.folder.id] ?? false)
-  const toggleExpand = useStore((s) => s.toggleExpand)
+  const target = { kind: 'folder' as const, id: node.folder.id }
+  const title = useStore((s) => readingTitle(s, target))
+  const locked = useStore((s) => !!blockedLock(s, target))
+  const protectedItem = useStore((s) => hasReadingLock(s, target))
+  const active = useStore((s) => s.activeFolderId === node.folder.id)
+  const expanded = useStore((s) => (s.expanded[node.folder.id] ?? false) && !blockedLock(s, target))
+  const openFolder = useStore((s) => s.openFolder)
   const count = node.notes.length + node.children.length
 
   const actions: (MenuAction | 'separator')[] = [
-    { label: '在此新建笔记', icon: <IconNote size={16} />, onSelect: () => void sync.createNote(node.folder.id) },
-    { label: '新建子目录', icon: <IconFolderPlus size={16} />, onSelect: () => void sync.createFolder('新建目录', node.folder.id) },
+    ...readingLockMenuActions(target),
     'separator',
-    { label: '重命名', icon: <IconPencil size={16} />, onSelect: props.onStartRename },
+    { disabled: locked, label: '在此新建笔记', icon: <IconNote size={16} />, onSelect: () => void sync.createNote(node.folder.id) },
+    { disabled: locked, label: '新建子目录', icon: <IconFolderPlus size={16} />, onSelect: () => void sync.createFolder('新建目录', node.folder.id) },
+    'separator',
+    { disabled: locked, label: '重命名', icon: <IconPencil size={16} />, onSelect: props.onStartRename },
     {
-      label: '导出这个目录',
+      label: '导出这个目录', disabled: locked,
       icon: <IconExport size={16} />,
       onSelect: () => void exportAll({ folderId: node.folder.id }),
     },
     {
-      label: '删除目录',
+      label: '删除目录', disabled: locked,
       icon: <IconTrash size={16} />,
       danger: true,
       onSelect: () => void sync.deleteFolder(node.folder.id),
@@ -382,14 +394,14 @@ function FolderRow(props: {
     <>
       <div
         className={
-          'tree-row is-folder' +
+          'tree-row is-folder' + (active ? ' is-active' : '') +
           (dropInside ? ' is-drop-inside' : '') +
           (dragging ? ' is-dragging' : '')
         }
         style={{ paddingLeft: 6 + depth * 16 }}
-        onClick={() => toggleExpand(node.folder.id)}
+        onClick={() => openFolder(node.folder.id)}
         onContextMenu={(e) => menu.open(e, actions)}
-        title={node.folder.name}
+        title={title}
         {...dragProps}
         {...dropProps}
       >
@@ -397,7 +409,7 @@ function FolderRow(props: {
           className={'tree-twist' + (expanded ? ' is-open' : '')}
           onClick={(e) => {
             e.stopPropagation()
-            toggleExpand(node.folder.id)
+            openFolder(node.folder.id)
           }}
         >
           <IconChevron size={14} />
@@ -407,7 +419,7 @@ function FolderRow(props: {
         ) : (
           <IconFolder size={17} className="tree-icon" />
         )}
-        {renaming ? (
+        {renaming && !locked ? (
           <RenameInput
             initial={node.folder.name}
             onCommit={(name) => {
@@ -417,12 +429,14 @@ function FolderRow(props: {
           />
         ) : (
           <>
-            <span className="tree-label">{node.folder.name}</span>
-            {count > 0 && <span className="tree-count">{count}</span>}
+            <span className="tree-label">{title}</span>
+            {protectedItem && (locked ? <IconLock size={12} className="tree-lock" /> : <IconUnlock size={12} className="tree-lock" />)}
+            {!locked && count > 0 && <span className="tree-count">{count}</span>}
             <span className="tree-actions">
               <button
                 className="icon-btn"
                 title="在此新建笔记"
+                disabled={locked}
                 onClick={(e) => {
                   e.stopPropagation()
                   void sync.createNote(node.folder.id)
@@ -465,14 +479,19 @@ function NoteRow(props: {
 }) {
   const { note, depth, active, dragging, renaming, dragProps, dropProps, menu } = props
   const setActive = useStore((s) => s.setActive)
-  const title = note.title?.trim()
+  const target = { kind: 'note' as const, id: note.id }
+  const locked = useStore((s) => !!blockedLock(s, target))
+  const protectedItem = useStore((s) => hasReadingLock(s, target))
+  const title = useStore((s) => readingTitle(s, target))
 
   const actions: (MenuAction | 'separator')[] = [
-    { label: '重命名', icon: <IconPencil size={16} />, onSelect: props.onStartRename },
-    { label: '移出目录', icon: <IconFolder size={16} />, onSelect: () => void sync.moveNote(note.id, null) },
-    { label: '导出为 Markdown', icon: <IconExport size={16} />, onSelect: () => void exportNote(note) },
+    ...readingLockMenuActions(target),
     'separator',
-    { label: '删除笔记', icon: <IconTrash size={16} />, danger: true, onSelect: () => void sync.deleteNote(note.id) },
+    { disabled: locked, label: '重命名', icon: <IconPencil size={16} />, onSelect: props.onStartRename },
+    { disabled: locked, label: '移出目录', icon: <IconFolder size={16} />, onSelect: () => void sync.moveNote(note.id, null) },
+    { disabled: locked, label: '导出为 Markdown', icon: <IconExport size={16} />, onSelect: () => void exportNote(note) },
+    'separator',
+    { disabled: locked, label: '删除笔记', icon: <IconTrash size={16} />, danger: true, onSelect: () => void sync.deleteNote(note.id) },
   ]
 
   return (
@@ -486,9 +505,9 @@ function NoteRow(props: {
       {...dropProps}
     >
       <IconNote size={16} className="tree-icon" />
-      {renaming ? (
+      {renaming && !locked ? (
         <RenameInput
-          initial={title || ''}
+          initial={note.title?.trim() || ''}
           onCommit={(name) => {
             if (name && name !== title) void sync.renameNote(note.id, name)
             props.onEndRename()
@@ -496,7 +515,8 @@ function NoteRow(props: {
         />
       ) : (
         <>
-          <span className={'tree-label' + (title ? '' : ' is-untitled')}>{title || '无标题'}</span>
+          <span className={'tree-label' + (!locked && !note.title?.trim() ? ' is-untitled' : '')}>{title}</span>
+          {protectedItem && (locked ? <IconLock size={12} className="tree-lock" /> : <IconUnlock size={12} className="tree-lock" />)}
           <span className="tree-actions">
             <button
               className="icon-btn"

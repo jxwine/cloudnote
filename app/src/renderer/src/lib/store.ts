@@ -1,5 +1,6 @@
 import { create } from 'zustand'
-import type { ConflictNotice, Folder, Note, PromptRequest, SyncStatus, Toast, User } from './types'
+import type { ConflictNotice, Folder, Note, PromptRequest, SyncStatus, Toast, User, LockTarget } from './types'
+import { blockedLock, lockChain, lockKey, retainedGrants, prepareToLock } from './readingLock'
 import { session } from './api'
 import { SHORTCUTS, resolveBindings, type ShortcutId, type ShortcutOverrides } from './shortcuts'
 import { readViewport, type Viewport } from './viewport'
@@ -102,6 +103,15 @@ const readUi = (): UiShape => {
 }
 
 interface State extends CacheShape, UiShape {
+  activeFolderId: string | null
+  lockGrants: Record<string, string>
+  lockEpoch: number
+  lockScope: LockTarget | null
+  readingLockDialog: { target: LockTarget; mode: 'set' | 'remove' | 'reset' } | null
+  openFolder(id: string): void
+  relock(target?: LockTarget): void
+  requestReadingLock(target: LockTarget, mode: 'set' | 'remove' | 'reset'): void
+  closeReadingLockDialog(): void
   user: User | null
   status: SyncStatus
   peers: number
@@ -242,6 +252,41 @@ export const useStore = create<State>((set, get) => {
     searchJump: 0,
     viewport: readViewport(),
     drawer: null,
+    activeFolderId: null,
+    lockGrants: {},
+    lockEpoch: 0,
+    lockScope: null,
+    readingLockDialog: null,
+
+    requestReadingLock: (target, mode) => set({ readingLockDialog: { target, mode } }),
+    closeReadingLockDialog: () => set({ readingLockDialog: null }),
+    relock: (target) => {
+      // 未使用阅读锁时保持原有标题结算时机，普通窗口失焦不触发额外保存。
+      if (Object.keys(get().lockGrants).length) prepareToLock()
+      set((s) => {
+        const lockGrants = { ...s.lockGrants }
+        const expanded = { ...s.expanded }
+        for (const key of Object.keys(lockGrants)) {
+          const item: LockTarget = { kind: key.startsWith('folder:') ? 'folder' : 'note', id: key.slice(key.indexOf(':') + 1) }
+          if (!target || key === lockKey(target) || lockChain(s, item).some((t) => lockKey(t) === lockKey(target))) {
+            delete lockGrants[key]
+            if (item.kind === 'folder') expanded[item.id] = false
+          }
+        }
+        return { lockGrants, expanded, lockEpoch: s.lockEpoch + 1, readingLockDialog: null }
+      })
+    },
+    openFolder: (id) => {
+      const s = get()
+      if (!s.folders[id] || s.folders[id].deleted) return
+      const target: LockTarget = { kind: 'folder', id }
+      prepareToLock()
+      const lockGrants = retainedGrants(s, target)
+      const locked = blockedLock({ ...s, lockGrants }, target)
+      set({ activeNoteId: null, activeFolderId: locked ? id : null, lockScope: target, lockGrants, lockEpoch: s.lockEpoch + 1 })
+      if (!locked) get().toggleExpand(id)
+      persistUi()
+    },
 
     prompt: (opts) =>
       new Promise<string | null>((resolve) => set({ dialog: { ...opts, resolve } })),
@@ -252,22 +297,31 @@ export const useStore = create<State>((set, get) => {
       dialog?.resolve(value)
     },
 
-    setUser: (user) => set({ user }),
+    setUser: (user) => {
+      if (user?.id !== get().user?.id) get().relock()
+      set({ user })
+    },
     setStatus: (status, peers) =>
       set((s) => ({ status, peers: peers === undefined ? s.peers : peers })),
     setDirty: (dirtyNoteId) => set({ dirtyNoteId }),
 
     applyFolder: (folder) => {
-      set((s) => ({
-        folders: { ...s.folders, [folder.id]: folder },
-      }))
+      set((s) => {
+        const next = { ...s, folders: { ...s.folders, [folder.id]: s.folders[folder.id]?.version > folder.version ? s.folders[folder.id] : folder } }
+        return { folders: next.folders, lockGrants: retainedGrants(next, s.lockScope) }
+      })
       persistCache()
     },
 
     applyNote: (note) => {
-      set((s) => ({
-        notes: { ...s.notes, [note.id]: note },
-      }))
+      set((s) => {
+        const next = { ...s,
+        notes: { ...s.notes, [note.id]: s.notes[note.id]?.seq > note.seq
+          ? { ...s.notes[note.id], version: Math.max(note.version, s.notes[note.id].version) }
+          : note },
+        }
+        return { notes: next.notes, lockGrants: retainedGrants(next, s.lockScope) }
+      })
       persistCache()
     },
 
@@ -281,13 +335,18 @@ export const useStore = create<State>((set, get) => {
         for (const n of notes) {
           // 正在编辑的笔记不被后台批量拉取覆盖，避免吞掉用户正在敲的字
           if (n.id === s.dirtyNoteId && !n.deleted) {
+            if (n.seq >= (nextNotes[n.id]?.seq ?? 0) && nextNotes[n.id]) {
+              nextNotes[n.id] = { ...nextNotes[n.id], folderId: n.folderId, readingLock: n.readingLock, seq: n.seq }
+            }
             // 未确认的草稿不能借用远端版本号，冲突必须由同步引擎处理。
             continue
           } else if (!nextNotes[n.id] || n.version >= nextNotes[n.id].version) {
             nextNotes[n.id] = n
           }
         }
-        return { folders: nextFolders, notes: nextNotes, lastSeq: seq === undefined ? s.lastSeq : Math.max(s.lastSeq, seq) }
+        return { folders: nextFolders, notes: nextNotes,
+          lockGrants: retainedGrants({ ...s, folders: nextFolders, notes: nextNotes }, s.lockScope),
+          lastSeq: seq === undefined ? s.lastSeq : Math.max(s.lastSeq, seq) }
       })
       persistCache()
     },
@@ -307,12 +366,24 @@ export const useStore = create<State>((set, get) => {
     },
 
     setActive: (activeNoteId) => {
-      set({ activeNoteId })
+      const s = get()
+      if (activeNoteId !== s.activeNoteId || s.activeFolderId) prepareToLock()
+      set({ activeNoteId, activeFolderId: null,
+        lockScope: activeNoteId ? { kind: 'note', id: activeNoteId } : null,
+        lockGrants: retainedGrants(s, activeNoteId ? { kind: 'note', id: activeNoteId } : null),
+        lockEpoch: s.lockEpoch + 1 })
       persistUi()
     },
 
     toggleExpand: (id, value) => {
-      set((s) => ({ expanded: { ...s.expanded, [id]: value ?? !s.expanded[id] } }))
+      const s = get()
+      const next = value ?? !s.expanded[id]
+      if (next && blockedLock(s, { kind: 'folder', id })) {
+        get().openFolder(id)
+        return
+      }
+      if (!next) get().relock({ kind: 'folder', id })
+      set((s) => ({ expanded: { ...s.expanded, [id]: next } }))
       persistUi()
     },
 
@@ -331,14 +402,21 @@ export const useStore = create<State>((set, get) => {
     setDrawer: (drawer) => set({ drawer }),
 
     setSearch: (search) => set({ search }),
-    setSidebarView: (sidebarView) => set({ sidebarView, tagFilter: null }),
-    setAuthExpired: (authExpired) => set({ authExpired }),
+    setSidebarView: (sidebarView) => {
+      if (get().sidebarView === 'trash' && sidebarView !== 'trash') get().relock()
+      set({ sidebarView, tagFilter: null })
+    },
+    setAuthExpired: (authExpired) => { if (authExpired) get().relock(); set({ authExpired }) },
     // 筛选结果显示在标签视图里，返回时能退回标签总览；
     // 同时清掉搜索词，免得两种过滤叠在一起看不出当前在看什么
-    setTagFilter: (tagFilter) => set({ tagFilter, sidebarView: 'tags', search: '' }),
+    setTagFilter: (tagFilter) => {
+      if (get().sidebarView === 'trash') get().relock()
+      set({ tagFilter, sidebarView: 'tags', search: '' })
+    },
 
     jumpToSearchHit: (noteId) => {
-      set({ activeNoteId: noteId, searchJump: Date.now() })
+      get().setActive(noteId)
+      set({ searchJump: Date.now() })
       persistUi()
     },
     setTheme: (theme) => set({ theme }),
@@ -384,7 +462,7 @@ export const useStore = create<State>((set, get) => {
     reloadCache: () => {
       if (cacheTimer) clearTimeout(cacheTimer)
       cacheTimer = null
-      set({ ...readCache(), activeNoteId: null, dirtyNoteId: null, notices: [], authExpired: null, toast: null })
+      set({ ...readCache(), activeNoteId: null, activeFolderId: null, lockScope: null, lockGrants: {}, lockEpoch: get().lockEpoch + 1, readingLockDialog: null, dirtyNoteId: null, notices: [], authExpired: null, toast: null })
     },
 
     reset: () => {
@@ -396,6 +474,11 @@ export const useStore = create<State>((set, get) => {
         folders: {},
         notes: {},
         activeNoteId: null,
+        activeFolderId: null,
+        lockScope: null,
+        lockGrants: {},
+        lockEpoch: get().lockEpoch + 1,
+        readingLockDialog: null,
         user: null,
         status: 'offline',
         notices: [],

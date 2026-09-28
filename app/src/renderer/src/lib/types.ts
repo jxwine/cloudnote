@@ -7,7 +7,17 @@ export interface User {
   isAdmin: boolean
 }
 
+export interface ReadingLock {
+  salt: string
+  hash: string
+  iterations: number
+  revision: string
+}
+
+export interface LockTarget { kind: 'note' | 'folder'; id: string }
+
 export interface Folder {
+  readingLock?: ReadingLock | null
   id: string
   name: string
   parentId: string | null
@@ -20,6 +30,7 @@ export interface Folder {
 }
 
 export interface Note {
+  readingLock?: ReadingLock | null
   id: string
   folderId: string | null
   title: string

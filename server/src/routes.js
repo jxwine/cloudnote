@@ -1,13 +1,17 @@
 import { db, tx, nextSeq, newId } from './db.js'
 import {
   register, login, sign, authGuard, adminGuard, httpError,
-  changePassword, resetPassword, toUser,
+  changePassword, resetPassword, toUser, verifyAccountPassword,
 } from './auth.js'
 import { broadcast, peerCount, kick, onlineCount, onlineStats } from './hub.js'
 import { saveDataUrl, readUpload, uploadsRoot } from './uploads.js'
 import { saveStream, readRelease, removeRelease } from './releases.js'
 import { buildWebClipProfile } from './webclip.js'
 import { allowAuth, bumpAuth, resetAuth, uploadLimiter } from './guard.js'
+import {
+  parseReadingLock, rejectReadingLockFields, validateReadingLockInput,
+  createReadingLock, readingLockLimiter, recordReadingLockFailure,
+} from './reading-lock.js'
 import { rmSync } from 'node:fs'
 import { join } from 'node:path'
 
@@ -16,6 +20,7 @@ const toFolder = (r) =>
   r && {
     id: r.id, name: r.name, parentId: r.parent_id, sortOrder: r.sort_order,
     version: r.version, seq: r.seq, deleted: !!r.deleted,
+    readingLock: parseReadingLock(r.reading_lock),
     createdAt: r.created_at, updatedAt: r.updated_at,
   }
 const toNote = (r) =>
@@ -24,6 +29,7 @@ const toNote = (r) =>
     excerpt: r.excerpt, sortOrder: r.sort_order, version: r.version, seq: r.seq,
     deleted: !!r.deleted, conflictOf: r.conflict_of,
     tags: parseTags(r.tags),
+    readingLock: parseReadingLock(r.reading_lock),
     createdAt: r.created_at, updatedAt: r.updated_at,
   }
 
@@ -65,9 +71,11 @@ const Q = {
     ' VALUES (?,?,?,?,?,1,?,0,?,?)'
   ),
   insNote: db.prepare(
-    'INSERT INTO notes (id,user_id,folder_id,title,content,excerpt,sort_order,version,seq,deleted,conflict_of,tags,created_at,updated_at)' +
-    ' VALUES (?,?,?,?,?,?,?,1,?,0,?,?,?,?)'
+    'INSERT INTO notes (id,user_id,folder_id,title,content,excerpt,sort_order,version,seq,deleted,conflict_of,tags,created_at,updated_at,reading_lock)' +
+    ' VALUES (?,?,?,?,?,?,?,1,?,0,?,?,?,?,?)'
   ),
+  lockFolder: db.prepare('UPDATE folders SET reading_lock=?, version=version+1, seq=?, updated_at=? WHERE id=? AND user_id=?'),
+  lockNote: db.prepare('UPDATE notes SET reading_lock=?, version=version+1, seq=?, updated_at=? WHERE id=? AND user_id=?'),
   updFolder: db.prepare(
     'UPDATE folders SET name=?, parent_id=?, sort_order=?, deleted=?,' +
     ' version=version+1, seq=?, updated_at=? WHERE id=? AND user_id=?'
@@ -283,8 +291,43 @@ export default async function routes(app) {
       return { url: saved.path, bytes: saved.bytes }
     })
 
+    /* 阅读锁有独立 revision，正文保存不会把另一设备新设的密码覆盖掉。
+       异步密码计算后须重读实体，并在同步事务里核对 revision。 */
+    for (const [plural, entity, read, write, convert] of [
+      ['notes', 'note', Q.getNote, Q.lockNote, toNote],
+      ['folders', 'folder', Q.getFolder, Q.lockFolder, toFolder],
+    ]) {
+      priv.put(`/api/${plural}/:id/reading-lock`, { preHandler: readingLockLimiter }, async (req, reply) => {
+        const body = req.body
+        validateReadingLockInput(body)
+        const uid = req.user.id
+        const cur = read.get(req.params.id, uid)
+        if (!cur) throw httpError(404, '笔记或目录不存在')
+        const currentLock = parseReadingLock(cur.reading_lock)
+        if ((currentLock?.revision ?? null) !== body.baseLockRevision)
+          return reply.code(409).send({ conflict: true, [entity]: convert(cur) })
+        if (currentLock || body.password === null) {
+          try { await verifyAccountPassword(uid, body.accountPassword) }
+          catch (err) { recordReadingLockFailure(uid); throw err }
+        }
+        const lock = await createReadingLock(body.password)
+        const result = tx(() => {
+          const latest = read.get(cur.id, uid)
+          if (!latest) throw httpError(404, '笔记或目录不存在')
+          if ((parseReadingLock(latest.reading_lock)?.revision ?? null) !== body.baseLockRevision)
+            return { conflict: true, [entity]: convert(latest) }
+          write.run(lock ? JSON.stringify(lock) : null, nextSeq(uid), Date.now(), cur.id, uid)
+          return { [entity]: convert(read.get(cur.id, uid)) }
+        })
+        if (result.conflict) return reply.code(409).send(result)
+        broadcast(uid, { type: `${entity}:upsert`, [entity]: result[entity] }, req.clientId)
+        return result[entity]
+      })
+    }
+
     /* ================= 目录 ================= */
     priv.post('/api/folders', async (req) => {
+      rejectReadingLockFields(req.body)
       const uid = req.user.id
       const { id, name, parentId = null, sortOrder = Date.now() } = req.body || {}
       const now = Date.now()
@@ -302,6 +345,7 @@ export default async function routes(app) {
       const cur = Q.getFolder.get(req.params.id, uid)
       if (!cur) throw httpError(404, '目录不存在')
       const body = req.body || {}
+      rejectReadingLockFields(body)
       if (body.baseVersion != null && body.baseVersion !== cur.version)
         return reply.code(409).send({ conflict: true, folder: toFolder(cur) })
       if (body.parentId && wouldCycle(uid, cur.id, body.parentId))
@@ -334,13 +378,17 @@ export default async function routes(app) {
     priv.post('/api/notes', async (req) => {
       const uid = req.user.id
       const b = req.body || {}
+      rejectReadingLockFields(b)
+      const source = b.conflictOf == null ? null : Q.getNote.get(b.conflictOf, uid)
+      if (b.conflictOf != null && !source) throw httpError(404, '冲突来源笔记不存在')
       const now = Date.now()
       const note = tx(() => {
         const nid = b.id || newId()
         Q.insNote.run(
-          nid, uid, b.folderId ?? null, String(b.title || '').slice(0, 200),
+          nid, uid, source ? source.folder_id : b.folderId ?? null, String(b.title || '').slice(0, 200),
           b.content || '', String(b.excerpt || '').slice(0, 300),
-          b.sortOrder ?? now, nextSeq(uid), b.conflictOf ?? null, serializeTags(b.tags), now, now
+          b.sortOrder ?? now, nextSeq(uid), b.conflictOf ?? null, serializeTags(b.tags), now, now,
+          source?.reading_lock ?? null
         )
         return toNote(Q.getNote.get(nid, uid))
       })
@@ -354,6 +402,7 @@ export default async function routes(app) {
       const cur = Q.getNote.get(req.params.id, uid)
       if (!cur) throw httpError(404, '笔记不存在')
       const b = req.body || {}
+      rejectReadingLockFields(b)
       if (b.baseVersion != null && b.baseVersion !== cur.version)
         return reply.code(409).send({ conflict: true, note: toNote(cur) })
 
