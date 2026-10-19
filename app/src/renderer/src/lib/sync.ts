@@ -1,4 +1,4 @@
-import { api, session, clientId, AuthError, ConflictError, OfflineError, newLocalId } from './api'
+import { api, session, clientId, AuthError, ConflictError, OfflineError, NotFoundError, newLocalId } from './api'
 import { useStore } from './store'
 import type { Note, LockTarget } from './types'
 import { blockedLock, onBeforeLock, readingTitle } from './readingLock'
@@ -56,6 +56,23 @@ const pendingBases = new Map<string, number>()
 let syncTask: Promise<void> | null = null
 let syncAgain = false
 let replayTask: Promise<void> | null = null
+const activePulls = new Set<symbol>()
+// 本次账号会话中，彻底删除优先于仍在途的旧请求回执。
+const purgedNotes = new Set<string>()
+
+/** 待发不等于正在同步：失败后无人处理的草稿必须进入可重试状态。 */
+function settleSyncStatus() {
+  if (store().authExpired) {
+    store().setStatus('error')
+    return
+  }
+  // 保留请求报出的离线/失败；只有正在同步的状态需要在请求结束时结算。
+  if (store().status !== 'syncing') return
+  if (savingNotes.size || replayTask || activePulls.size) return
+  const queued = hasQueuedOperations()
+  if (!pendingSaves.size && !queued) store().setStatus('synced')
+  else if (queued || [...pendingSaves.keys()].some((id) => !saveTimers.has(id))) store().setStatus('error')
+}
 /** 请求在途期间也保留草稿；第三项携带恢复所需的基准与笔记，兼容旧的二元组。 */
 function persistPending(): boolean {
   // 旧草稿损坏且还没有安全备份时，绝不能用新草稿覆盖唯一的原文。
@@ -84,6 +101,7 @@ function restorePending() {
   try {
     const entries = JSON.parse(localStorage.getItem(PENDING_KEY) || '[]') as [string, Patch, { baseVersion?: number; note?: Note }?][]
     for (const [id, patch, recovery] of entries) {
+      if (purgedNotes.has(id)) continue
       if (pendingSaves.has(id)) continue
       const local = store().notes[id] ?? recovery?.note
       pendingSaves.set(id, patch)
@@ -140,13 +158,14 @@ function replayQueue(): Promise<void> {
   if (replayTask) return replayTask
   const epoch = getAccountEpoch()
   const task = Promise.resolve().then(async () => {
-    while (epoch === getAccountEpoch() && session.token) {
+    while (epoch === getAccountEpoch() && session.token && !store().authExpired) {
       const op = loadQueue()[0]
       if (!op) break
       try {
         await runOp(op, epoch)
       } catch (err) {
         if (epoch !== getAccountEpoch()) return
+        if (op.kind.startsWith('note.') && purgedNotes.has(op.id)) continue
         if (err instanceof AuthError) onAuthExpired(err.message)
         else store().setStatus(err instanceof OfflineError ? 'offline' : 'error')
         // 未确认的操作留在队列，包括服务端暂时失败；不能静默丢弃。
@@ -159,7 +178,10 @@ function replayQueue(): Promise<void> {
       if (index >= 0) current.splice(index, 1)
       saveQueue(current)
     }
-  }).finally(() => { if (replayTask === task) replayTask = null })
+  }).finally(() => {
+    if (replayTask === task) replayTask = null
+    if (epoch === getAccountEpoch()) settleSyncStatus()
+  })
   replayTask = task
   return task
 }
@@ -195,7 +217,7 @@ async function runOp(op: QueuedOp, epoch: number) {
         if (!existing) throw err
         saved = existing
       }
-      if (current()) {
+      if (current() && !purgedNotes.has(op.id)) {
         const draft = pendingSaves.get(op.id)
         store().applyNote({ ...saved, ...draft })
         if (draft) {
@@ -217,7 +239,7 @@ async function runOp(op: QueuedOp, epoch: number) {
 /* ---------------- 连接与拉取 ---------------- */
 
 export function start() {
-  if (!session.token) return
+  if (!session.token || store().authExpired) return
   accountSuspended = false
   stopped = false
   restorePending()
@@ -227,6 +249,7 @@ export function start() {
 
 /** 启动、焦点、重连共用同一轮对账，先补建，再提交草稿，再拉取。 */
 export function syncNow(): Promise<void> {
+  if (!session.token || store().authExpired) return Promise.resolve()
   if (syncTask) {
     // 网络恢复时，旧一轮可能仍在等待即将失败的请求；保留这次重跑意图。
     syncAgain = true
@@ -234,15 +257,15 @@ export function syncNow(): Promise<void> {
   }
   const epoch = getAccountEpoch()
   const task = Promise.resolve().then(async () => {
-    if (!session.token) return
+    if (!session.token || store().authExpired) return
     do {
       syncAgain = false
       await replayQueue()
-      if (epoch !== getAccountEpoch()) return
+      if (epoch !== getAccountEpoch() || !session.token || store().authExpired) return
       await flushAll()
-      if (epoch !== getAccountEpoch()) return
+      if (epoch !== getAccountEpoch() || !session.token || store().authExpired) return
       await pullDelta()
-    } while (syncAgain && epoch === getAccountEpoch() && session.token)
+    } while (syncAgain && epoch === getAccountEpoch() && session.token && !store().authExpired)
   }).finally(() => { if (syncTask === task) syncTask = null })
   syncTask = task
   return task
@@ -257,7 +280,7 @@ export function stop() {
 }
 
 function connectWs() {
-  if (stopped || !session.token) return
+  if (stopped || !session.token || store().authExpired) return
   if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return
 
   store().setStatus('connecting')
@@ -302,10 +325,11 @@ function scheduleReconnect() {
 function handleMessage(msg: Record<string, unknown>) {
   switch (msg.type) {
     case 'ready':
-      store().setStatus(hasPending() || loadQueue().length ? 'syncing' : 'synced', (msg.peers as number) ?? 0)
+      // 连接就绪仅代表推送可用，不能覆盖 HTTP 保存/拉取的失败状态。
+      store().setStatus(store().status, (msg.peers as number) ?? 0)
       break
     case 'presence':
-      store().setStatus(store().status === 'offline' ? 'synced' : store().status, Math.max(0, ((msg.peers as number) ?? 1) - 1))
+      store().setStatus(store().status, Math.max(0, ((msg.peers as number) ?? 1) - 1))
       break
     case 'folder:upsert':
       store().applyFolder(msg.folder as never)
@@ -316,9 +340,7 @@ function handleMessage(msg: Record<string, unknown>) {
     case 'note:purged': {
       // 别端彻底删了它，本地连墓碑一起清掉
       const id = msg.id as string
-      pendingSaves.delete(id)
-      persistPending()
-      store().dropLocal('note', id)
+      applyPurge(id)
       break
     }
   }
@@ -330,6 +352,7 @@ function handleMessage(msg: Record<string, unknown>) {
  * - 本地正在编辑 → 把云端版本归档成冲突副本，本地内容原样保留
  */
 function onRemoteNote(remote: Note): boolean {
+  if (purgedNotes.has(remote.id)) return true
   const s = store()
   const local = s.notes[remote.id]
   if (local && remote.version <= local.version) return true
@@ -353,6 +376,7 @@ function onRemoteNote(remote: Note): boolean {
 }
 
 export function applyReadingLockNote(note: Note) {
+  if (purgedNotes.has(note.id)) return
   const draft = pendingSaves.get(note.id)
   store().applyNote({ ...note, ...draft })
 }
@@ -378,6 +402,7 @@ function archiveRemote(remote: Note, incoming?: string): Promise<boolean> {
 
 /** 返回是否真的归档成功了——调用方要靠它决定敢不敢收下远端的版本号 */
 async function doArchive(remote: Note, incoming: string | undefined, epoch: number): Promise<boolean> {
+  if (purgedNotes.has(remote.id)) return false
   const s = store()
 
   /*
@@ -419,7 +444,7 @@ async function doArchive(remote: Note, incoming: string | undefined, epoch: numb
         excerpt: remote.excerpt,
         baseVersion: copy.version,
       })
-      if (epoch !== getAccountEpoch()) return false
+      if (epoch !== getAccountEpoch() || purgedNotes.has(remote.id) || purgedNotes.has(updated.id)) return false
       s.applyNote(updated)
       activeArchive.set(remote.id, { copyId: updated.id, at: Date.now() })
       s.pushNotice({ noteId: remote.id, copyId: updated.id, copyTitle: title, at: Date.now() })
@@ -434,7 +459,7 @@ async function doArchive(remote: Note, incoming: string | undefined, epoch: numb
       conflictOf: remote.id,
       sortOrder: Date.now(),
     })
-    if (epoch !== getAccountEpoch()) return false
+    if (epoch !== getAccountEpoch() || purgedNotes.has(remote.id) || purgedNotes.has(copy.id)) return false
     s.applyNote(copy)
     activeArchive.set(remote.id, { copyId: copy.id, at: Date.now() })
     s.pushNotice({ noteId: remote.id, copyId: copy.id, copyTitle: title, at: Date.now() })
@@ -446,23 +471,37 @@ async function doArchive(remote: Note, incoming: string | undefined, epoch: numb
   }
 }
 
-/** 增量拉取；断线重连、启动、切前台时调用 */
+/** 断线重连、启动、切前台时拉取；有回收站记录时用全量核对补齐彻底删除。 */
 export async function pullDelta() {
-  if (!session.token) return
+  if (!session.token || store().authExpired) return
   const epoch = getAccountEpoch()
+  const activity = Symbol()
+  activePulls.add(activity)
   try {
     store().setStatus('syncing')
-    const res = await api.pull(store().lastSeq)
+    // 服务端彻底删除后不保留记录，增量拉取无法告知哪些 ID 已消失。
+    // 有本地回收站记录时全量核对，同时清理旧版本漏收删除消息的残留。
+    const since = Object.values(store().notes).some((note) => note.deleted) ? 0 : store().lastSeq
+    const res = await api.pull(since)
     if (epoch !== getAccountEpoch()) return
+    if (since === 0) {
+      const remoteIds = new Set(res.notes.map((note) => note.id))
+      const creating = new Set(loadQueue().filter((op) => op.kind === 'note.create').map((op) => op.id))
+      for (const local of Object.values(store().notes)) {
+        // 本地新建与快照之后的新版本都不能按“云端不存在”清理。
+        if (local.deleted && local.seq <= res.seq && !remoteIds.has(local.id) && !creating.has(local.id)) applyPurge(local.id)
+      }
+    }
     let complete = true
     for (const note of res.notes) if (!onRemoteNote(note)) complete = false
     store().applyBatch(res.folders, [], complete ? res.seq : undefined)
-    if (!hasPending() && !loadQueue().length) store().setStatus('synced')
-    else if (store().status === 'syncing') store().setStatus('error')
   } catch (err) {
     if (epoch !== getAccountEpoch()) return
     if (err instanceof AuthError) onAuthExpired(err.message)
     else store().setStatus(err instanceof OfflineError ? 'offline' : 'error')
+  } finally {
+    activePulls.delete(activity)
+    if (epoch === getAccountEpoch()) settleSyncStatus()
   }
 }
 
@@ -503,6 +542,7 @@ export function flushNote(noteId: string): Promise<void> {
   const epoch = getAccountEpoch()
   const task = Promise.resolve().then(() => saveDraft(noteId, epoch)).finally(() => {
     if (savingNotes.get(noteId) === task) savingNotes.delete(noteId)
+    if (epoch === getAccountEpoch()) settleSyncStatus()
   })
   savingNotes.set(noteId, task)
   return task
@@ -513,7 +553,7 @@ async function saveDraft(noteId: string, epoch: number) {
     await replayQueue()
     if (epoch !== getAccountEpoch() || loadQueue().some((op) => op.kind === 'note.create' && op.id === noteId)) return
   }
-  while (epoch === getAccountEpoch() && pendingSaves.has(noteId)) {
+  while (epoch === getAccountEpoch() && pendingSaves.has(noteId) && !store().authExpired) {
     const patch = pendingSaves.get(noteId)!
     const local = store().notes[noteId]
     if (!local) return // 保留可恢复草稿，不能因缓存缺失就删除。
@@ -527,13 +567,13 @@ async function saveDraft(noteId: string, epoch: number) {
       try {
         saved = await api.updateNote(noteId, { ...patch, baseVersion: pendingBases.get(noteId) ?? local.version })
       } catch (err) {
-        if (epoch !== getAccountEpoch()) return
+        if (epoch !== getAccountEpoch() || !pendingSaves.has(noteId)) return
         if (!(err instanceof ConflictError)) throw err
         // 仅改元信息时不覆盖远端正文，无需制造正文冲突副本。
         if (patch.content !== undefined && !(await archiveRemote(err.note, patch.content))) {
           throw new Error('云端有更新的版本，暂时没能备份下来')
         }
-        if (epoch !== getAccountEpoch()) return
+        if (epoch !== getAccountEpoch() || !pendingSaves.has(noteId)) return
         saved = await api.updateNote(noteId, { ...patch, baseVersion: err.note.version })
       }
       if (epoch !== getAccountEpoch()) return
@@ -552,9 +592,8 @@ async function saveDraft(noteId: string, epoch: number) {
       saveFailures.delete(noteId)
       store().markSaved()
       store().setDirty(pendingSaves.keys().next().value ?? null)
-      store().setStatus(pendingSaves.size || loadQueue().length ? 'syncing' : 'synced')
     } catch (err) {
-      if (epoch !== getAccountEpoch()) return
+      if (epoch !== getAccountEpoch() || !pendingSaves.has(noteId)) return
       // pending 始终是最新意图，失败回执绝不再写回捕获的旧 patch。
       persistPending()
       if (err instanceof AuthError) onAuthExpired(err.message)
@@ -607,6 +646,8 @@ function clearMemory() {
   syncTask = null
   syncAgain = false
   replayTask = null
+  activePulls.clear()
+  purgedNotes.clear()
 }
 
 export function suspendAccount() {
@@ -826,21 +867,46 @@ export async function deleteNote(id: string) {
   })
 }
 
+/** 清理已确认彻底删除的本地记录，避免重试或迟到响应将其恢复。 */
+function applyPurge(id: string) {
+  purgedNotes.add(id)
+  pendingSaves.delete(id)
+  pendingBases.delete(id)
+  saveFailures.delete(id)
+  saveSince.delete(id)
+  recentSave.delete(id)
+  const timer = saveTimers.get(id)
+  if (timer) clearTimeout(timer)
+  saveTimers.delete(id)
+  const queue = loadQueue()
+  const remaining = queue.filter((op) => !(op.kind.startsWith('note.') && op.id === id))
+  if (remaining.length !== queue.length) saveQueue(remaining)
+  persistPending()
+  store().setDirty(pendingSaves.keys().next().value ?? null)
+  store().dropLocal('note', id)
+  store().flushCache()
+  settleSyncStatus()
+}
+
 /** 彻底删除，不可撤销 */
 export async function purgeNote(id: string) {
   if (!requireReadable({ kind: 'note', id })) return
   const epoch = getAccountEpoch()
   const s = store()
   try {
+    // 先确认新建结果，否则先到的 404 会让迟到的 POST 留下云端幽灵笔记。
+    if (loadQueue().some((op) => op.kind === 'note.create' && op.id === id)) {
+      await replayQueue()
+      if (epoch !== getAccountEpoch()) return
+      if (loadQueue().some((op) => op.kind === 'note.create' && op.id === id)) throw new Error('新建笔记尚未同步完成')
+    }
     await api.purgeNote(id)
     if (epoch !== getAccountEpoch()) return
-    pendingSaves.delete(id)
-    pendingBases.delete(id)
-    persistPending()
-    s.dropLocal('note', id)
+    applyPurge(id)
   } catch (err) {
     if (epoch !== getAccountEpoch()) return
-    if (err instanceof AuthError) onAuthExpired(err.message)
+    if (err instanceof NotFoundError) applyPurge(id)
+    else if (err instanceof AuthError) onAuthExpired(err.message)
     else s.showToast({ message: err instanceof OfflineError ? '离线状态下无法彻底删除，联网后再试' : '彻底删除失败，笔记和草稿已保留，请稍后重试' })
   }
 }

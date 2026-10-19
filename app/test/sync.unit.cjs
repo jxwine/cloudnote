@@ -26,12 +26,13 @@ function harness(overrides = {}, storage = new Map()) {
     removeItem: key => storage.delete(key),
   }
   const timers = new Map()
+  const sockets = []
   let nextTimer = 0
   class WebSocket {
     static OPEN = 1
     static CONNECTING = 0
     readyState = WebSocket.CONNECTING
-    constructor(url) { this.url = url }
+    constructor(url) { this.url = url; sockets.push(this) }
     close() { this.readyState = 3; this.onclose?.() }
   }
   const context = vm.createContext({
@@ -59,6 +60,7 @@ function harness(overrides = {}, storage = new Map()) {
   }
   class OfflineError extends Error {}
   class AuthError extends Error {}
+  class NotFoundError extends Error {}
   class ConflictError extends Error {
     constructor(remote) { super('conflict'); this.note = remote }
   }
@@ -70,7 +72,7 @@ function harness(overrides = {}, storage = new Map()) {
   }
   const deps = {
     api, session: { token: 'test', user: null, server: 'http://mock' }, clientId: 'test-client',
-    OfflineError, AuthError, ConflictError, newLocalId: () => 'local-id',
+    OfflineError, AuthError, NotFoundError, ConflictError, newLocalId: () => 'local-id',
   }
   function load(file, imports) {
     const code = transformSync(fs.readFileSync(path.join(root, file), 'utf8'), {
@@ -106,12 +108,430 @@ function harness(overrides = {}, storage = new Map()) {
     const entry = raw && JSON.parse(raw).find(row => row[0] === id)
     return entry?.[1]
   }
-  return { api, sync, state, storage, localStorage, pending, runTimers, OfflineError, ConflictError, readingLock,
+  return { api, sync, state, storage, localStorage, pending, runTimers, sockets, AuthError, OfflineError, NotFoundError, ConflictError, readingLock,
     bumpEpoch: () => ++epoch }
 }
 
 const tests = []
 const test = (name, fn) => tests.push({ name, fn })
+
+test('missed permanent deletion is reconciled with the server and persisted across restart', async () => {
+  const storage = new Map()
+  let since
+  const h = harness({ pull: async value => { since = value; return { seq: 5, folders: [], notes: [] } } }, storage)
+  h.state().applyNote(note('N', 'trash', 2, 4, { deleted: true }))
+  h.state().applyBatch([], [], 4)
+  await h.sync.pullDelta()
+  assert.equal(since, 0, 'cached trash requires a full snapshot because purges leave no delta')
+  assert.equal(h.state().notes.N, undefined)
+  assert.equal(h.state().lastSeq, 5)
+  assert.equal(h.state().status, 'synced')
+  const restarted = harness({}, storage)
+  assert.equal(restarted.state().notes.N, undefined)
+})
+
+test('legacy trash reconciliation preserves offline new notes and changes newer than the snapshot', async () => {
+  const storage = new Map([['cloudnote.cache', JSON.stringify({
+    cursorVersion: 2, lastSeq: 5, folders: {}, notes: { N: note('N', 'legacy trash', 2, 4, { deleted: true }) },
+  })]])
+  let since
+  const pull = deferred()
+  const h = harness({ pull: value => { since = value; return pull.promise } }, storage)
+  h.state().applyNote(note('new', 'offline new', 1, 5, { deleted: true }))
+  h.localStorage.setItem('cloudnote.queue', JSON.stringify([{ kind: 'note.create', id: 'new' }]))
+  const syncing = h.sync.pullDelta()
+  h.state().applyNote(note('later', 'created after snapshot', 1, 7, { deleted: true }))
+  pull.resolve({ seq: 6, folders: [], notes: [] })
+  await syncing
+  assert.equal(since, 0, 'cached trash must request an authoritative full snapshot')
+  assert.equal(h.state().notes.N, undefined)
+  assert.equal(h.state().notes.new.content, 'offline new')
+  assert.equal(h.state().notes.later.content, 'created after snapshot')
+})
+
+test('permanent deletion removes pending drafts, queued operations and retry timers', async () => {
+  let patches = 0
+  const h = harness({
+    updateNote: async () => { patches++; throw new Error('purged note must not be saved') },
+    pull: async () => ({ seq: 3, folders: [], notes: [] }),
+  })
+  h.state().applyNote(note('N', 'trash', 1, 1, { deleted: true }))
+  h.sync.queueSave('N', { title: 'pending title' })
+  h.localStorage.setItem('cloudnote.queue', JSON.stringify([{ kind: 'note.delete', id: 'N' }]))
+  await h.sync.pullDelta()
+  assert.equal(h.sync.hasPending('N'), false)
+  assert.equal(h.pending('N'), undefined)
+  assert.equal(h.state().dirtyNoteId, null)
+  assert.equal(h.sync.hasQueuedOperations(), false)
+  await h.runTimers(5000)
+  assert.equal(patches, 0)
+  assert.equal(h.state().notes.N, undefined)
+  assert.equal(h.state().status, 'synced')
+})
+
+test('late pull and websocket upsert cannot resurrect a permanently deleted note', async () => {
+  const stale = deferred()
+  let pulls = 0
+  const h = harness({ pull: () => ++pulls === 1 ? stale.promise : Promise.resolve({ seq: 1, folders: [], notes: [] }) })
+  h.state().applyNote(note('N', 'trash', 1, 1, { deleted: true }))
+  h.sync.start()
+  await tick()
+  const socket = h.sockets[0]
+  socket.onmessage({ data: JSON.stringify({ type: 'note:purged', id: 'N' }) })
+  stale.resolve({ seq: 1, folders: [], notes: [note('N', 'stale trash', 1, 1, { deleted: true })] })
+  await h.sync.syncNow()
+  socket.onmessage({ data: JSON.stringify({ type: 'note:upsert', note: note('N', 'stale', 1, 1, { deleted: true }) }) })
+  assert.equal(h.state().notes.N, undefined)
+})
+
+test('save response arriving after permanent deletion cannot restore the note or draft', async () => {
+  const patch = deferred()
+  const h = harness({
+    updateNote: () => patch.promise,
+    pull: async () => ({ seq: 3, folders: [], notes: [] }),
+  })
+  h.state().applyNote(note('N', 'trash', 1, 1, { deleted: true }))
+  h.sync.queueSave('N', { title: 'edited title' })
+  const saving = h.sync.flushNote('N')
+  await tick()
+  await h.sync.pullDelta()
+  patch.resolve(note('N', 'old response', 2, 2, { deleted: true }))
+  await saving
+  assert.equal(h.state().notes.N, undefined)
+  assert.equal(h.sync.hasPending(), false)
+  assert.equal(h.pending('N'), undefined)
+})
+
+test('彻底删除后迟到的保存失败不能留下错误状态或重新安排重试', async () => {
+  const patch = deferred()
+  const h = harness({
+    updateNote: () => patch.promise,
+    pull: async () => ({ seq: 3, folders: [], notes: [] }),
+  })
+  h.state().applyNote(note('N', 'trash', 1, 1, { deleted: true }))
+  h.sync.queueSave('N', { title: 'edited title' })
+  const saving = h.sync.flushNote('N')
+  await tick()
+  await h.sync.pullDelta()
+  patch.reject(new h.NotFoundError('already purged'))
+  await saving
+  assert.equal(h.state().notes.N, undefined)
+  assert.equal(h.sync.hasPending(), false)
+  assert.equal(h.pending('N'), undefined)
+  assert.equal(h.state().status, 'synced')
+  await h.runTimers(5000)
+  assert.equal(h.state().status, 'synced')
+  assert.equal(h.state().toast, null)
+})
+
+for (const reuse of [false, true]) {
+  test(`彻底删除冲突副本后，迟到的${reuse ? '更新' : '创建'}归档回执不能复活副本或放行正文覆盖`, async () => {
+    const archive = deferred()
+    let server = note('N', 'remote first', 2, 2)
+    let archiving = false
+    const h = harness({
+      updateNote: async (id, patch) => {
+        if (id === 'copy') { archiving = true; return archive.promise }
+        if (patch.baseVersion !== server.version) throw new h.ConflictError(server)
+        server = note('N', patch.content, server.version + 1, server.seq + 1)
+        return server
+      },
+      createNote: async input => {
+        if (reuse) return note('copy', input.content, 1, 3, { conflictOf: 'N' })
+        archiving = true
+        return archive.promise
+      },
+    })
+    h.sync.start()
+    await h.sync.syncNow()
+    h.state().applyNote(note('N', 'local', 1, 1))
+    h.sync.queueSave('N', { content: 'local first' })
+    if (reuse) {
+      await h.sync.flushNote('N')
+      assert.equal(h.state().notes.copy.content, 'remote first')
+      server = note('N', 'remote second', server.version + 1, server.seq + 1)
+      h.sync.queueSave('N', { content: 'local second' })
+    }
+    const saving = h.sync.flushNote('N')
+    await tick()
+    assert.equal(archiving, true)
+    h.sockets[0].onmessage({ data: JSON.stringify({ type: 'note:purged', id: 'copy' }) })
+    archive.resolve(note('copy', server.content, reuse ? 2 : 1, server.seq + 1, { conflictOf: 'N' }))
+    await saving
+    assert.equal(h.state().notes.copy, undefined)
+    assert.equal(server.content, reuse ? 'remote second' : 'remote first')
+    assert.equal(h.pending('N').content, reuse ? 'local second' : 'local first')
+    h.sync.stop()
+  })
+}
+
+test('新建请求仍在途时彻底删除必须等待创建确认，不能在云端留下幽灵笔记', async () => {
+  const creation = deferred()
+  let server = null
+  let purges = 0
+  const h = harness({
+    createNote: async input => {
+      await creation.promise
+      server = note(input.id, input.content)
+      return server
+    },
+    updateNote: async (id, patch) => {
+      if (!server) throw new h.NotFoundError('already purged')
+      server = note(id, server.content, 2, 2, { deleted: patch.deleted })
+      return server
+    },
+    purgeNote: async () => {
+      purges++
+      if (!server) throw new h.NotFoundError('not created yet')
+      server = null
+    },
+  })
+  const creating = h.sync.createNote(null, { content: 'new note' })
+  await tick()
+  const deleting = h.sync.deleteNote('local-id')
+  const purging = h.sync.purgeNote('local-id')
+  await tick()
+  assert.equal(purges, 0, '创建结果未确认前不能将 404 当作已彻底删除')
+  creation.resolve()
+  await Promise.all([creating, deleting, purging])
+  assert.equal(purges, 1)
+  assert.equal(server, null)
+  assert.equal(h.state().notes['local-id'], undefined)
+  assert.equal(h.sync.hasPending(), false)
+  assert.equal(h.sync.hasQueuedOperations(), false)
+})
+
+test('彻底删除最后一份防抖待发草稿后必须结束同步中', async () => {
+  const h = harness({
+    updateNote: async (id, patch) => note(id, patch.content, 2, 2),
+    purgeNote: async () => ({}),
+  })
+  for (const id of ['A', 'B']) {
+    h.state().applyNote(note(id, 'old'))
+    h.sync.queueSave(id, { content: 'draft' })
+  }
+  await h.sync.flushNote('A')
+  assert.equal(h.state().status, 'syncing')
+  await h.sync.purgeNote('B')
+  assert.equal(h.sync.hasPending(), false)
+  assert.equal(h.state().status, 'synced')
+  await h.runTimers(5000)
+  assert.equal(h.state().status, 'synced')
+})
+
+test('彻底删除后旧队列操作的迟到失败不能阻断后续新建', async () => {
+  const deletion = deferred()
+  const h = harness({
+    deleteNote: () => deletion.promise,
+    purgeNote: async () => ({}),
+    createNote: async input => note(input.id, input.content),
+  })
+  h.state().applyNote(note('N', 'trash', 1, 1, { deleted: true }))
+  h.storage.set('cloudnote.queue', JSON.stringify([{ kind: 'note.delete', id: 'N' }]))
+  h.state().setStatus('syncing')
+  const creating = h.sync.createNote(null, { content: 'keep creating' })
+  await tick()
+  await h.sync.purgeNote('N')
+  deletion.reject(new h.NotFoundError('already purged'))
+  await creating
+  assert.equal(h.state().notes.N, undefined)
+  assert.equal(h.state().notes['local-id'].content, 'keep creating')
+  assert.equal(h.sync.hasQueuedOperations(), false)
+  assert.equal(h.state().status, 'synced')
+})
+
+test('clearing an already purged note treats 404 as success and keeps unrelated drafts', async () => {
+  const h = harness({ purgeNote: async () => { throw new h.NotFoundError('already gone') } })
+  h.state().applyNote(note('N', 'stale trash', 1, 1, { deleted: true }))
+  h.state().applyNote(note('other', 'other note'))
+  h.sync.queueSave('N', { title: 'stale title' })
+  h.sync.queueSave('other', { content: 'keep this draft' })
+  await h.sync.purgeNote('N')
+  assert.equal(h.state().notes.N, undefined)
+  assert.equal(h.sync.hasPending('N'), false)
+  assert.equal(h.pending('N'), undefined)
+  assert.equal(h.pending('other').content, 'keep this draft')
+  assert.equal(h.state().toast, null)
+})
+
+test('server failures preserve trash and drafts and failed full pulls never prune local data', async () => {
+  const h = harness({
+    purgeNote: async () => { throw new Error('server unavailable') },
+    pull: async () => { throw new h.OfflineError() },
+  })
+  h.state().applyNote(note('N', 'trash', 1, 1, { deleted: true }))
+  h.sync.queueSave('N', { title: 'keep title' })
+  await h.sync.purgeNote('N')
+  await h.sync.pullDelta()
+  assert.equal(h.state().notes.N.title, 'keep title')
+  assert.equal(h.pending('N').title, 'keep title')
+  assert.ok(h.state().toast)
+})
+
+test('trash reconciliation preserves cloud trash and applies notes restored by another device', async () => {
+  const h = harness({ pull: async () => ({ seq: 5, folders: [], notes: [
+    note('N', 'still trash', 2, 3, { deleted: true }), note('restored', 'restored body', 3, 5),
+  ] }) })
+  h.state().applyNote(note('N', 'still trash', 2, 3, { deleted: true }))
+  h.state().applyNote(note('restored', 'trash before restore', 2, 4, { deleted: true }))
+  await h.sync.pullDelta()
+  assert.equal(h.state().notes.N.deleted, true)
+  assert.equal(h.state().notes.restored.deleted, false)
+  assert.equal(h.state().notes.restored.content, 'restored body')
+})
+
+test('late deletion response from an old account cannot remove the current account note', async () => {
+  const deletion = deferred()
+  const h = harness({ purgeNote: () => deletion.promise })
+  h.state().applyNote(note('N', 'old trash', 1, 1, { deleted: true }))
+  const purging = h.sync.purgeNote('N')
+  h.sync.suspendAccount()
+  h.state().reset()
+  h.state().applyNote(note('N', 'new account note'))
+  deletion.reject(new h.NotFoundError('old account already purged'))
+  await purging
+  assert.equal(h.state().notes.N.content, 'new account note')
+})
+
+test('队列遇到登录失效后停止本轮同步，焦点重试也不能覆盖错误状态', async () => {
+  let pulls = 0
+  const h = harness({
+    createNote: async () => { throw new h.AuthError('登录已失效') },
+    pull: async () => { pulls++; throw new h.AuthError('登录已失效') },
+  })
+  h.storage.set('cloudnote.queue', JSON.stringify([
+    { kind: 'note.create', id: 'N', folderId: null, title: 'N', content: 'draft', excerpt: '', sortOrder: 1 },
+  ]))
+  await h.sync.syncNow()
+  await h.sync.syncNow()
+  await h.sync.pullDelta()
+  h.sync.start()
+  await tick()
+  assert.equal(h.state().authExpired, '登录已失效')
+  assert.equal(h.state().status, 'error')
+  assert.equal(pulls, 0, '鉴权失败后不得继续拉取或重新连接')
+  assert.equal(h.sockets.length, 0)
+  assert.equal(h.sync.hasQueuedOperations(), true)
+})
+
+test('另一篇失败草稿不能让已保存的当前笔记一直显示同步中', async () => {
+  let online = false
+  const h = harness({ updateNote: async (id, patch) => {
+    if (id === 'A' && !online) throw new h.OfflineError()
+    return note(id, patch.content, 2, 2)
+  } })
+  for (const id of ['A', 'B']) h.state().applyNote(note(id, 'old'))
+  h.sync.queueSave('A', { content: 'A draft' })
+  await h.sync.flushNote('A')
+  h.sync.queueSave('B', { content: 'B saved' })
+  await h.sync.flushNote('B')
+  assert.equal(h.state().notes.B.content, 'B saved')
+  assert.equal(h.pending('A').content, 'A draft')
+  assert.equal(h.state().status, 'error', '没有正在发送或定时待发的请求时必须结束同步中')
+  online = true
+  await h.sync.syncNow()
+  assert.equal(h.sync.hasPending(), false)
+  assert.equal(h.state().status, 'synced')
+})
+
+test('遗留操作队列失败时，单篇保存成功仍应显示可重试的失败状态', async () => {
+  const h = harness({
+    createFolder: async () => { throw new h.OfflineError() },
+    updateNote: async (id, patch) => note(id, patch.content, 2, 2),
+  })
+  h.storage.set('cloudnote.queue', JSON.stringify([{ kind: 'folder.create', id: 'F', name: 'F', parentId: null, sortOrder: 1 }]))
+  await h.sync.syncNow()
+  h.state().applyNote(note('N', 'old'))
+  h.sync.queueSave('N', { content: 'saved' })
+  await h.sync.flushNote('N')
+  assert.equal(h.sync.hasPending(), false)
+  assert.equal(h.sync.hasQueuedOperations(), true)
+  assert.equal(h.state().status, 'error')
+})
+
+test('并发保存只有在所有请求完成后才结束同步中', async () => {
+  const gate = deferred()
+  const h = harness({ updateNote: async (id, patch) => id === 'A' ? gate.promise : note(id, patch.content, 2, 2) })
+  for (const id of ['A', 'B']) {
+    h.state().applyNote(note(id, 'old'))
+    h.sync.queueSave(id, { content: 'saved' })
+  }
+  const first = h.sync.flushNote('A')
+  await h.sync.flushNote('B')
+  assert.equal(h.state().status, 'syncing')
+  await h.sync.pullDelta()
+  assert.equal(h.state().status, 'syncing', '拉取完成不能把仍在途的保存标成失败')
+  gate.resolve(note('A', 'saved', 2, 2))
+  await first
+  assert.equal(h.state().status, 'synced')
+})
+
+test('WebSocket ready 不能把已失败的待发草稿重标为同步中', async () => {
+  const h = harness({ updateNote: async () => { throw new h.OfflineError() } })
+  h.sync.start()
+  await h.sync.syncNow()
+  h.state().applyNote(note('N', 'old'))
+  h.sync.queueSave('N', { content: 'draft' })
+  await h.sync.flushNote('N')
+  h.sockets[0].onmessage({ data: JSON.stringify({ type: 'ready', peers: 2 }) })
+  assert.equal(h.state().status, 'offline')
+  assert.equal(h.state().peers, 2)
+  assert.equal(h.pending('N').content, 'draft')
+})
+
+test('保存遇到登录失效时保留草稿，同号重新登录后自动补传并恢复已同步', async () => {
+  let authorized = false
+  let pulls = 0
+  const h = harness({
+    updateNote: async (id, patch) => {
+      if (!authorized) throw new h.AuthError('登录已失效')
+      return note(id, patch.content, 2, 2)
+    },
+    pull: async () => { pulls++; return { seq: 2, folders: [], notes: [] } },
+  })
+  h.state().applyNote(note('N', 'old'))
+  h.sync.queueSave('N', { content: 'draft' })
+  await h.sync.syncNow()
+  await h.sync.syncNow()
+  assert.equal(h.state().status, 'error')
+  assert.equal(pulls, 0)
+  assert.equal(h.pending('N').content, 'draft')
+  h.sync.activateAccount('http://mock', 'same-user')
+  authorized = true
+  await h.sync.syncNow()
+  assert.equal(h.state().authExpired, null)
+  assert.equal(h.state().notes.N.content, 'draft')
+  assert.equal(h.sync.hasPending(), false)
+  assert.equal(h.state().status, 'synced')
+})
+
+test('并发拉取的迟到成功不能覆盖登录失效状态', async () => {
+  const stale = deferred()
+  let calls = 0
+  const h = harness({ pull: async () => {
+    if (++calls === 1) return stale.promise
+    throw new h.AuthError('登录已失效')
+  } })
+  const first = h.sync.pullDelta()
+  await h.sync.pullDelta()
+  stale.resolve({ seq: 0, folders: [], notes: [] })
+  await first
+  assert.equal(h.state().authExpired, '登录已失效')
+  assert.equal(h.state().status, 'error')
+})
+
+test('其他笔记仍在防抖等待时保持同步中，自动保存结束后显示已同步', async () => {
+  const h = harness({ updateNote: async (id, patch) => note(id, patch.content, 2, 2) })
+  for (const id of ['A', 'B']) {
+    h.state().applyNote(note(id, 'old'))
+    h.sync.queueSave(id, { content: 'saved' })
+  }
+  await h.sync.flushNote('A')
+  assert.equal(h.state().status, 'syncing')
+  await h.runTimers(700)
+  assert.equal(h.sync.hasPending(), false)
+  assert.equal(h.state().status, 'synced')
+})
 
 test('在途请求完成前，草稿保持持久化且标记待保存', async () => {
   const gate = deferred()

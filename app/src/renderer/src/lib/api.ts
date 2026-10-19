@@ -75,6 +75,14 @@ export class OfflineError extends Error {
   }
 }
 
+/** 资源不存在；重复彻底删除时可据此完成本地清理。 */
+export class NotFoundError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'NotFoundError'
+  }
+}
+
 /**
  * 登录凭证不作数了：token 过期（默认 30 天）、密钥换了、账号被停用。
  *
@@ -109,6 +117,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   if (res.status === 409 && data?.conflict) throw new ConflictError(data.note)
   // 登录接口自己的 401 是「邮箱或密码错误」，那是正常的表单校验结果，不算凭证失效
   if (res.status === 401 && token) throw new AuthError(data?.error || '登录已失效，请重新登录')
+  if (res.status === 404) throw new NotFoundError(data?.error || '请求的资源不存在')
   if (!res.ok) throw new Error(data?.error || `请求失败（${res.status}）`)
   return data as T
 }
