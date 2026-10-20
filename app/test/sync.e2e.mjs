@@ -12,7 +12,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { rmSync, readdirSync } from 'node:fs'
 import { bootEnv, shutdown } from './harness.mjs'
-import { sleep, reattach } from './cdp.mjs'
+import { sleep, reattach, until } from './cdp.mjs'
 import * as ui from './app.mjs'
 import * as inv from './invariants.mjs'
 
@@ -96,6 +96,88 @@ async function main() {
   }
   env = await bootEnv({ tmpDir: TMP })
 
+  await scenario('手动同步：状态旁独立按钮立即保存并拉取，离线可重试', async (expect) => {
+    const [A] = await freshPair(1)
+    await ui.newNote(A)
+    await ui.waitSynced(A)
+    await ui.focusBody(A)
+    await A.type('手动同步正文')
+    // 在 700ms 防抖到期前点击，并在同一事件轮连续点击，检查忙碌保护。
+    await A.slowNetwork(250)
+    const busy = await A.evaluate(() => {
+      const button = document.querySelector('.sync-manual')
+      button.click()
+      button.click()
+      return new Promise(resolve => requestAnimationFrame(() => resolve({
+        disabled: button.disabled,
+        label: button.getAttribute('aria-label'),
+        separate: button !== document.querySelector('.sync-chip'),
+      })))
+    })
+    expect('按钮独立于状态，点击后显示同步中并禁用', {
+      ok: busy.separate && busy.disabled && busy.label.includes('同步中'), why: JSON.stringify(busy),
+    })
+    await until(() => A.evaluate(() => document.querySelector('.toast')?.textContent.includes('手动同步完成')), { what: '手动同步完成提示' })
+    const saved = await ui.serverNotes(A)
+    expect('草稿与自动结算的标题已写到真实服务端', {
+      ok: saved.some(n => n.title === '手动同步正文' && n.text.includes('手动同步正文')), why: JSON.stringify(saved),
+    })
+    await A.slowNetwork(0)
+    const remoteId = await A.evaluate(async () => {
+      const r = await fetch(localStorage.getItem('cloudnote.server') + '/api/notes', {
+        method: 'POST',
+        headers: {
+          authorization: 'Bearer ' + localStorage.getItem('cloudnote.token'),
+          'content-type': 'application/json',
+          'x-client-id': localStorage.getItem('cloudnote.clientId'),
+        },
+        body: JSON.stringify({ title: '漏推送的云端笔记', content: '<p>手动拉取</p>' }),
+      })
+      if (!r.ok) throw new Error('构造云端笔记失败')
+      return (await r.json()).id
+    })
+    const beforePull = await ui.notes(A)
+    expect('构造没有 WebSocket 回声的云端变化', { ok: !beforePull.some(n => n.id === remoteId), why: '变化已经自动到达' })
+    await A.evaluate(() => { document.querySelector('.sync-manual').click(); return 1 })
+    await until(async () => (await ui.notes(A)).some(n => n.id === remoteId), { what: '手动拉取云端新增笔记' })
+    expect('没有本地改动时也会主动拉取', { ok: true })
+    await ui.waitSynced(A)
+
+    await A.offline(true)
+    await sleep(300)
+    await ui.focusBody(A)
+    await A.type('[手动重试的离线草稿]')
+    await A.evaluate(() => { document.querySelector('.sync-manual').click(); return 1 })
+    await until(() => A.evaluate(() => document.querySelector('.toast')?.textContent.includes('当前离线')), { what: '手动同步离线提示' })
+    expect('离线不提示成功，草稿仍在本地', {
+      ok: await A.evaluate(() => (localStorage.getItem('cloudnote.pending') || '').includes('手动重试的离线草稿')),
+    })
+    await A.offline(false)
+    await until(() => A.evaluate(() => !document.querySelector('.sync-manual').disabled), { what: '手动重试按钮恢复可用' })
+    await A.evaluate(() => { document.querySelector('.sync-manual').click(); return 1 })
+    await ui.waitSynced(A)
+    expect('网络恢复后与服务端一致', inv.matchesServer(await ui.notes(A), await ui.serverNotes(A)))
+
+    await A.slowNetwork(900)
+    await ui.focusBody(A)
+    await A.type('[自动保存中主动同步]')
+    const pending = await A.evaluate(() => document.querySelector('.sync-chip').textContent)
+    expect('防抖等待期间显示待同步', { ok: pending.includes('待同步'), why: pending })
+    await until(() => A.evaluate(() => document.querySelector('.sync-chip').textContent.includes('同步中')), { what: '自动保存开始' })
+    const automatic = await A.evaluate(() => {
+      const status = document.querySelector('.sync-chip')
+      const button = document.querySelector('.sync-manual')
+      return { static: status.tagName === 'SPAN', enabled: !button.disabled, busy: button.getAttribute('aria-busy') }
+    })
+    expect('自动保存时状态独立显示，手动图标保持可用', {
+      ok: automatic.static && automatic.enabled && automatic.busy === 'false', why: JSON.stringify(automatic),
+    })
+    await A.evaluate(() => { document.querySelector('.sync-manual').click(); return 1 })
+    await ui.waitSynced(A)
+    expect('自动保存与手动核对串行完成，数据一致', inv.matchesServer(await ui.notes(A), await ui.serverNotes(A)))
+    await A.slowNetwork(0)
+  })
+
   // ---------------------------------------------------------------
   await scenario('归档冲突副本的请求失败时，也不许吃掉对方的内容', async (expect) => {
     const [A, B] = await freshPair()
@@ -124,7 +206,7 @@ async function main() {
     const restore = await A.failRequests({ method: 'POST', urlIncludes: '/api/notes', times: 2 })
     await A.offline(false)
     await A.evaluate(() => {
-      document.querySelector('.sync-chip').click()
+      document.querySelector('.sync-manual').click()
       return 1
     })
     await sleep(6000)
@@ -132,7 +214,7 @@ async function main() {
 
     // 放开之后再给它一次机会把该归档的归档掉
     await A.evaluate(() => {
-      document.querySelector('.sync-chip').click()
+      document.querySelector('.sync-manual').click()
       return 1
     })
     await sleep(8000)
@@ -166,7 +248,7 @@ async function main() {
 
     await A.offline(false)
     await A.evaluate(() => {
-      document.querySelector('.sync-chip').click()
+      document.querySelector('.sync-manual').click()
       return 1
     })
     await sleep(8000)
@@ -374,7 +456,7 @@ async function main() {
 
     // 恢复后重连一次，内容应该补传上去
     await A.evaluate(() => {
-      document.querySelector('.sync-chip').click()
+      document.querySelector('.sync-manual').click()
       return 1
     })
     await sleep(8000)

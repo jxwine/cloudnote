@@ -115,6 +115,210 @@ function harness(overrides = {}, storage = new Map()) {
 const tests = []
 const test = (name, fn) => tests.push({ name, fn })
 
+test('手动同步先结算标题、重放队列、提交草稿，再拉取云端更新', async () => {
+  const events = []
+  const h = harness({
+    createFolder: async op => { events.push('queue'); return { ...op, seq: 2 } },
+    updateNote: async (id, patch) => {
+      events.push('save')
+      assert.equal(patch.title, '手动结算的标题')
+      assert.equal(patch.content, '防抖期的正文')
+      return note(id, patch.content, 2, 3, { title: patch.title })
+    },
+    pull: async () => { events.push('pull'); return { seq: 4, folders: [], notes: [note('remote', '云端新增', 1, 4)] } },
+  })
+  h.state().applyNote(note('N', '旧正文', 1, 1, { title: '' }))
+  h.sync.queueSave('N', { content: '防抖期的正文' })
+  h.storage.set('cloudnote.queue', JSON.stringify([{ kind: 'folder.create', id: 'F', name: 'F', parentId: null, sortOrder: 1 }]))
+  h.sync.onBeforeFlush(() => { events.push('prepare'); h.sync.queueSave('N', { title: '手动结算的标题' }) })
+  await h.sync.syncManually()
+  assert.deepEqual(events, ['prepare', 'queue', 'save', 'pull'])
+  assert.equal(h.state().notes.remote.content, '云端新增')
+  assert.equal(h.sync.hasPending(), false)
+  assert.equal(h.sync.hasQueuedOperations(), false)
+  assert.equal(h.state().toast.message, '手动同步完成')
+})
+
+test('手动同步合并连续点击，连接健康时保留原 WebSocket', async () => {
+  const gate = deferred()
+  let pulls = 0
+  const h = harness({ pull: async () => { pulls++; return gate.promise } })
+  const first = h.sync.syncManually()
+  assert.equal(h.state().manualSyncing, true, '点击后同步设置共享忙碌状态')
+  const second = h.sync.syncManually()
+  assert.equal(first, second)
+  await tick()
+  assert.equal(pulls, 1)
+  assert.equal(h.sockets.length, 1)
+  h.sockets[0].readyState = 1
+  gate.resolve({ seq: 1, folders: [], notes: [] })
+  await first
+  assert.equal(h.state().manualSyncing, false)
+  await h.sync.syncManually()
+  assert.equal(pulls, 2)
+  assert.equal(h.sockets.length, 1, '正常连接不得被手动同步断开重建')
+})
+
+test('手动同步断网时保留草稿，恢复网络后可再次点击提交', async () => {
+  let online = false
+  const h = harness({
+    updateNote: async (id, patch) => {
+      if (!online) throw new h.OfflineError()
+      return note(id, patch.content, 2, 2)
+    },
+    pull: async () => {
+      if (!online) throw new h.OfflineError()
+      return { seq: 2, folders: [], notes: [] }
+    },
+  })
+  h.state().applyNote(note('N', '旧正文'))
+  h.sync.queueSave('N', { content: '离线草稿' })
+  await h.sync.syncManually()
+  assert.equal(h.state().status, 'offline')
+  assert.equal(h.pending('N').content, '离线草稿')
+  assert.match(h.state().toast.message, /离线/)
+  h.sockets[0].readyState = 3
+  online = true
+  await h.sync.syncManually()
+  assert.equal(h.sockets.length, 2, '断线后应立即尝试重连')
+  assert.equal(h.sync.hasPending(), false)
+  assert.equal(h.state().notes.N.content, '离线草稿')
+  assert.equal(h.state().toast.message, '手动同步完成')
+})
+
+test('手动同步的拉取成功不能掩盖草稿或队列提交失败', async () => {
+  for (const queued of [false, true]) {
+    const h = harness({
+      updateNote: async () => { throw new Error('save failed') },
+      createFolder: async () => { throw new Error('queue failed') },
+    })
+    if (queued) h.storage.set('cloudnote.queue', JSON.stringify([{ kind: 'folder.create', id: 'F', name: 'F', parentId: null, sortOrder: 1 }]))
+    else {
+      h.state().applyNote(note('N', '旧正文'))
+      h.sync.queueSave('N', { content: '失败时保留草稿' })
+    }
+    await h.sync.syncManually()
+    assert.equal(h.sync.hasPending() || h.sync.hasQueuedOperations(), true)
+    assert.equal(h.state().toast.message, '同步未完成，请稍后重试')
+  }
+})
+
+test('手动同步遇到登录失效后不提示成功，也不重新发起请求', async () => {
+  let pulls = 0
+  const h = harness({ pull: async () => { pulls++; throw new h.AuthError('登录已失效') } })
+  await h.sync.syncManually()
+  await h.sync.syncManually()
+  assert.equal(pulls, 1)
+  assert.equal(h.state().authExpired, '登录已失效')
+  assert.notEqual(h.state().toast?.message, '手动同步完成')
+})
+
+test('手动同步期间切换账号，不把旧结果提示到新账号', async () => {
+  const gate = deferred()
+  const h = harness({ pull: () => gate.promise })
+  const syncing = h.sync.syncManually()
+  await tick()
+  h.sync.suspendAccount()
+  assert.equal(h.state().manualSyncing, false, '退出账号立即清除旧账号的手动忙碌状态')
+  h.state().reset()
+  gate.resolve({ seq: 5, folders: [], notes: [note('old-account', '旧账号正文')] })
+  await syncing
+  assert.equal(h.state().notes['old-account'], undefined)
+  assert.equal(h.state().toast, null)
+})
+
+test('自动同步重放队列期间显示同步中，完成后静默收敛', async () => {
+  const gate = deferred()
+  const h = harness({ createFolder: () => gate.promise })
+  h.storage.set('cloudnote.queue', JSON.stringify([{ kind: 'folder.create', id: 'F', name: 'F', parentId: null, sortOrder: 1 }]))
+  h.state().setStatus('synced')
+  const automatic = h.sync.syncNow()
+  await tick()
+  assert.equal(h.state().status, 'syncing')
+  assert.equal(h.state().manualSyncing, false)
+  gate.resolve({ id: 'F', name: 'F', parentId: null, sortOrder: 1, seq: 1 })
+  await automatic
+  assert.equal(h.state().status, 'synced')
+  assert.equal(h.state().toast, null, '正常自动同步不弹完成提示')
+})
+
+test('自动拉取在途时手动请求串行加入，补传期间新增的草稿', async () => {
+  const gate = deferred()
+  const events = []
+  let pulls = 0
+  const h = harness({
+    pull: async () => {
+      events.push('pull' + ++pulls)
+      return pulls === 1 ? gate.promise : { seq: 2, folders: [], notes: [] }
+    },
+    updateNote: async (id, patch) => { events.push('save'); return note(id, patch.content, 2, 2) },
+  })
+  h.state().applyNote(note('N', 'old'))
+  const automatic = h.sync.syncNow()
+  await tick()
+  h.sync.queueSave('N', { content: '自动请求期间新增' })
+  const manual = h.sync.syncManually()
+  await tick()
+  assert.equal(h.state().manualSyncing, true)
+  assert.equal(pulls, 1, '手动请求不得另开并发拉取')
+  gate.resolve({ seq: 1, folders: [], notes: [] })
+  await Promise.all([automatic, manual])
+  assert.deepEqual(events, ['pull1', 'save', 'pull2'])
+  assert.equal(h.sync.hasPending(), false)
+  assert.equal(h.state().manualSyncing, false)
+  assert.equal(h.state().toast.message, '手动同步完成')
+})
+
+test('手动结果不能覆盖撤销操作或本轮出现的重要反馈', async () => {
+  for (const kind of ['existing-undo', 'new-undo', 'new-notice']) {
+    const gate = deferred()
+    const h = harness({ pull: () => gate.promise })
+    const important = kind === 'new-notice'
+      ? { message: '正文刚在其他设备上被修改' }
+      : { message: '已删除笔记', actionLabel: '撤销', onAction() {} }
+    if (kind === 'existing-undo') h.state().showToast(important)
+    const manual = h.sync.syncManually()
+    await tick()
+    if (kind !== 'existing-undo') h.state().showToast(important)
+    const shown = h.state().toast
+    gate.resolve({ seq: 1, folders: [], notes: [] })
+    await manual
+    assert.equal(h.state().toast, shown, kind)
+    assert.equal(h.state().manualSyncing, false)
+  }
+})
+
+test('手动拉取期间的新编辑继续自动保存，不误报同步失败', async () => {
+  const gate = deferred()
+  const h = harness({
+    pull: () => gate.promise,
+    updateNote: async (id, patch) => note(id, patch.content, 2, 2),
+  })
+  h.state().applyNote(note('N', 'old'))
+  const manual = h.sync.syncManually()
+  await tick()
+  h.sync.queueSave('N', { content: '同步期间继续输入' })
+  gate.resolve({ seq: 1, folders: [], notes: [] })
+  await manual
+  assert.equal(h.sync.hasPending(), true)
+  assert.equal(h.state().manualSyncing, false)
+  assert.equal(h.state().toast.message, '仍有新改动，正在自动同步')
+  await h.runTimers(700)
+  assert.equal(h.sync.hasPending(), false)
+  assert.equal(h.state().status, 'synced')
+})
+
+test('手动同步准备失败会反馈错误，下一次点击仍可重试', async () => {
+  const h = harness()
+  const off = h.sync.onBeforeFlush(() => { throw new Error('editor failed') })
+  await h.sync.syncManually()
+  assert.equal(h.state().status, 'error')
+  assert.equal(h.state().toast.message, '同步失败，请稍后重试')
+  off()
+  await h.sync.syncManually()
+  assert.equal(h.state().toast.message, '手动同步完成')
+})
+
 test('missed permanent deletion is reconciled with the server and persisted across restart', async () => {
   const storage = new Map()
   let since

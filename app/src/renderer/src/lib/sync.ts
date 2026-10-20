@@ -54,6 +54,7 @@ const saveSince = new Map<string, number>()
 const savingNotes = new Map<string, Promise<void>>()
 const pendingBases = new Map<string, number>()
 let syncTask: Promise<void> | null = null
+let manualSyncTask: Promise<void> | null = null
 let syncAgain = false
 let replayTask: Promise<void> | null = null
 const activePulls = new Set<symbol>()
@@ -161,6 +162,7 @@ function replayQueue(): Promise<void> {
     while (epoch === getAccountEpoch() && session.token && !store().authExpired) {
       const op = loadQueue()[0]
       if (!op) break
+      store().setStatus('syncing')
       try {
         await runOp(op, epoch)
       } catch (err) {
@@ -268,6 +270,53 @@ export function syncNow(): Promise<void> {
     } while (syncAgain && epoch === getAccountEpoch() && session.token && !store().authExpired)
   }).finally(() => { if (syncTask === task) syncTask = null })
   syncTask = task
+  return task
+}
+
+/** 主动同步：先结算编辑器，再复用自动对账；连接正常时保留原 WebSocket。 */
+export function syncManually(): Promise<void> {
+  if (manualSyncTask) return manualSyncTask
+  if (!session.token || store().authExpired || accountSuspended) return Promise.resolve()
+  const epoch = getAccountEpoch()
+  const current = () => epoch === getAccountEpoch() && !!session.token && !store().authExpired && !accountSuspended
+  const initialToast = store().toast
+  const showResult = (message: string) => {
+    if (!current()) return
+    const toast = store().toast
+    // 撤销入口和本轮出现的具体问题比一般完成提示更重要。
+    if (toast?.actionLabel || (toast && toast !== initialToast)) return
+    store().showToast({ message })
+  }
+  const task = Promise.resolve().then(async () => {
+    if (!current()) return
+    for (const fn of beforeFlushHooks) fn()
+    if (reconnectTimer) clearTimeout(reconnectTimer)
+    reconnectTimer = null
+    stopped = false
+    connectWs()
+    await syncNow()
+    if (!current()) return
+    const { status } = store()
+    const pending = hasPending() || hasQueuedOperations()
+    const failed = status === 'error' || hasQueuedOperations() || [...pendingSaves.keys()].some((id) => saveFailures.has(id))
+    showResult(status === 'synced' && !pending
+      ? '手动同步完成'
+      : status === 'offline'
+        ? '当前离线，请检查网络后重试同步'
+        : failed
+          ? '同步未完成，请稍后重试'
+          : pending ? '仍有新改动，正在自动同步' : '同步仍在进行，请稍候')
+  }).catch(() => {
+    if (!current()) return
+    store().setStatus('error')
+    showResult('同步失败，请稍后重试')
+  }).finally(() => {
+    if (manualSyncTask !== task) return
+    manualSyncTask = null
+    if (epoch === getAccountEpoch()) store().setManualSyncing(false)
+  })
+  manualSyncTask = task
+  store().setManualSyncing(true)
   return task
 }
 
@@ -644,6 +693,8 @@ function clearMemory() {
   archiveChain.clear()
   recentSave.clear()
   syncTask = null
+  manualSyncTask = null
+  store().setManualSyncing(false)
   syncAgain = false
   replayTask = null
   activePulls.clear()

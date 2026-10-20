@@ -932,20 +932,39 @@ textarea {
 
 /* ============================ 同步状态 ============================ */
 
+.sync-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
 .sync-chip {
   display: inline-flex;
+  flex-shrink: 0;
   align-items: center;
   gap: 6px;
   height: 26px;
   padding: 0 9px;
   border-radius: 13px;
   font-size: 11.5px;
+  white-space: nowrap;
   color: var(--text-2);
   transition: background 0.15s;
 }
 
-.sync-chip:hover {
-  background: var(--hover);
+.sync-manual[aria-busy='true'] svg {
+  animation: sync-spin 1s linear infinite;
+}
+
+@keyframes sync-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sync-manual[aria-busy='true'] svg {
+    animation: none;
+  }
 }
 
 .sync-dot {
@@ -958,6 +977,9 @@ textarea {
 
 .sync-dot.synced {
   background: var(--accent);
+}
+.sync-dot.pending {
+  background: var(--warn);
 }
 .sync-dot.syncing {
   background: var(--accent);
@@ -4050,9 +4072,26 @@ html[data-viewport='phone'] .menu {
   flex: 1;
 }
 
+.m-top .sync-controls {
+  gap: 0;
+  margin-left: 2px;
+}
+
 .m-top .sync-chip {
-  margin-left: 6px;
+  padding: 0 4px;
+  gap: 4px;
   font-size: 12.5px;
+}
+
+.m-top .sync-manual {
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+}
+
+.m-top .sync-manual svg {
+  width: 22px;
+  height: 22px;
 }
 
 .m-icon {

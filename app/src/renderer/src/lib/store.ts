@@ -114,6 +114,7 @@ interface State extends CacheShape, UiShape {
   closeReadingLockDialog(): void
   user: User | null
   status: SyncStatus
+  manualSyncing: boolean
   peers: number
   /** 当前笔记是否有尚未落库的改动——决定收到远端更新时是热更新还是生成冲突副本 */
   dirtyNoteId: string | null
@@ -151,6 +152,7 @@ interface State extends CacheShape, UiShape {
 
   setUser(user: User | null): void
   setStatus(status: SyncStatus, peers?: number): void
+  setManualSyncing(syncing: boolean): void
   setDirty(noteId: string | null): void
   applyFolder(folder: Folder): void
   applyNote(note: Note): void
@@ -237,6 +239,7 @@ export const useStore = create<State>((set, get) => {
     ...ui,
     user: session.user,
     status: 'offline',
+    manualSyncing: false,
     peers: 0,
     dirtyNoteId: null,
     notices: [],
@@ -304,6 +307,7 @@ export const useStore = create<State>((set, get) => {
     setStatus: (status, peers) =>
       set((s) => ({ status, peers: peers === undefined ? s.peers : peers })),
     setDirty: (dirtyNoteId) => set({ dirtyNoteId }),
+    setManualSyncing: (manualSyncing) => set({ manualSyncing }),
 
     applyFolder: (folder) => {
       set((s) => {
@@ -462,7 +466,7 @@ export const useStore = create<State>((set, get) => {
     reloadCache: () => {
       if (cacheTimer) clearTimeout(cacheTimer)
       cacheTimer = null
-      set({ ...readCache(), activeNoteId: null, activeFolderId: null, lockScope: null, lockGrants: {}, lockEpoch: get().lockEpoch + 1, readingLockDialog: null, dirtyNoteId: null, notices: [], authExpired: null, toast: null })
+      set({ ...readCache(), activeNoteId: null, activeFolderId: null, lockScope: null, lockGrants: {}, lockEpoch: get().lockEpoch + 1, readingLockDialog: null, dirtyNoteId: null, notices: [], authExpired: null, toast: null, manualSyncing: false })
     },
 
     reset: () => {
@@ -481,6 +485,7 @@ export const useStore = create<State>((set, get) => {
         readingLockDialog: null,
         user: null,
         status: 'offline',
+        manualSyncing: false,
         notices: [],
         dirtyNoteId: null,
         toast: null,

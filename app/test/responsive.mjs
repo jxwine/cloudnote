@@ -35,6 +35,7 @@ const SIZES = [
 const results = []
 let env
 let dev
+let extraPeer
 
 function check(name, ok, detail = '') {
   results.push({ name, ok, detail })
@@ -65,7 +66,7 @@ async function setViewport({ w, h }) {
     touchNow = mobile
     await dev.reload()
     await sleep(1500)
-    dev = await reattach(dev, { urlPart: '5273', name: '设备A' })
+    // 设备模拟属于 CDP 会话；此处重连会清掉刚设置的屏宽和触控条件。
     await ui.waitReady(dev)
   }
   // matchMedia 的 change 是异步派发的，给 React 一帧
@@ -130,6 +131,32 @@ const click = (sel) =>
     return 'ok'
   }, sel)
 
+async function checkSyncControls(label) {
+  const m = await dev.evaluate(() => {
+    const state = document.querySelector('.sync-chip')
+    const button = document.querySelector('.sync-manual')
+    if (!state || !button) return null
+    const a = state.getBoundingClientRect()
+    const b = button.getBoundingClientRect()
+    const header = button.closest('header')
+    const controls = [...header.querySelectorAll('button, .sync-chip')].map(el => el.getBoundingClientRect())
+      .filter(r => r.width > 0 && r.height > 0)
+    const noOverlap = controls.every((r, i) => controls.every((s, j) => i === j ||
+      r.right <= s.left + 0.5 || s.right <= r.left + 0.5 || r.bottom <= s.top || s.bottom <= r.top))
+    return {
+      separate: state !== button && b.left >= a.right && Math.abs((a.top + a.bottom) - (b.top + b.bottom)) < 1,
+      iconOnly: !!button.querySelector('svg') && !button.textContent.trim() && !!button.getAttribute('aria-label'),
+      fits: controls.every(r => r.left >= 0 && r.right <= innerWidth + 0.5) && noOverlap,
+      touchHeight: b.height,
+      theme: document.documentElement.dataset.theme,
+    }
+  })
+  check(`${label} 手动同步独立排列在状态旁`, !!m?.separate, JSON.stringify(m))
+  check(`${label} 使用有无障碍名称的纯图标按钮`, !!m?.iconOnly)
+  check(`${label} 顶栏操作均在屏内且互不重叠`, !!m?.fits)
+  if (label.includes('phone')) check(`${label} 同步按钮触控高度`, m?.touchHeight >= 40)
+}
+
 async function run() {
   rmSync(SHOTS, { recursive: true, force: true })
   mkdirSync(SHOTS, { recursive: true })
@@ -143,6 +170,12 @@ async function run() {
   await sleep(2500)
   dev = await reattach(d, { urlPart: '5273', name: '设备A' })
   await ui.waitReady(dev)
+  const token = await dev.evaluate(() => localStorage.getItem('cloudnote.token'))
+  extraPeer = new WebSocket(ui.SERVER.replace(/^http/, 'ws') + `/ws?token=${encodeURIComponent(token)}&clientId=responsive-peer`)
+  await new Promise((resolve, reject) => {
+    extraPeer.addEventListener('open', resolve, { once: true })
+    extraPeer.addEventListener('error', reject, { once: true })
+  })
 
   // 先在桌面档造点内容：两篇笔记，第二篇带几个标题给大纲用。
   // 标题直接敲在标题框里（新建后它自动聚焦），别让正文的 # 标题被结算成笔记标题——
@@ -181,6 +214,11 @@ async function run() {
     check(`${label} 档位属性`, m.viewport === (size.tier ?? null), `data-viewport=${m.viewport}`)
     check(`${label} 无横向溢出`, m.scrollWidth <= m.innerWidth, `${m.scrollWidth} <= ${m.innerWidth}`)
     check(`${label} 顶栏按钮都在屏内`, !m.titlebarOverflow)
+    await checkSyncControls(`${label} ${size.tier ?? 'desktop'} 初始页`)
+    await dev.evaluate(() => { document.documentElement.dataset.theme = 'dark'; return 1 })
+    await checkSyncControls(`${label} ${size.tier ?? 'desktop'} 深色`)
+    await shot(`${label}-sync-dark`)
+    await dev.evaluate(() => { document.documentElement.dataset.theme = 'light'; return 1 })
 
     if (size.tier === 'phone') {
       const rect = (sel) => dev.evaluate((s) => {
@@ -205,6 +243,7 @@ async function run() {
       await sleep(600)
       const hash = await dev.evaluate(() => location.hash)
       check(`${label} 点卡片进编辑页`, hash === '#/note' && (await count('.m-note')) === 1, `hash=${hash}`)
+      await checkSyncControls(`${label} phone 编辑页`)
       const bar = await rect('.editor-bar')
       check(`${label} 工具栏贴底`, bar && Math.abs(bar.bottom - size.h) < 1.5, JSON.stringify(bar))
       const title = await rect('.note-title')
@@ -377,6 +416,7 @@ run()
     results.push({ name: '脚本本身', ok: false, detail: String(e) })
   })
   .finally(async () => {
+    extraPeer?.close()
     await shutdown()
     const failed = results.filter((r) => !r.ok)
     console.log(`\n${results.length - failed.length}/${results.length} 通过；截图在 ${SHOTS}`)
