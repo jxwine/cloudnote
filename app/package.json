@@ -16,7 +16,7 @@
     "test:quick-switch": "node --no-warnings test/quick-switch.e2e.mjs",
     "test:reading-lock": "node --no-warnings test/reading-lock.e2e.mjs --headless",
     "test:sync:unit": "node --no-warnings test/sync.unit.cjs",
-    "test:unit": "node --no-warnings test/sync.unit.cjs && node --no-warnings test/sync-chip.unit.cjs && node --no-warnings test/account-storage.unit.cjs && node --no-warnings test/account-sync.unit.cjs && node --no-warnings test/reading-lock.unit.cjs && node --no-warnings test/reading-lock-actions.unit.cjs",
+    "test:unit": "node --no-warnings test/sync.unit.cjs && node --no-warnings test/sync-chip.unit.cjs && node --no-warnings test/account-storage.unit.cjs && node --no-warnings test/account-sync.unit.cjs && node --no-warnings test/reading-lock.unit.cjs && node --no-warnings test/reading-lock-actions.unit.cjs && node --no-warnings test/web-update.unit.cjs",
     "test:responsive": "node --no-warnings test/responsive.mjs"
   },
   "dependencies": {

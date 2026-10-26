@@ -1000,6 +1000,18 @@ export function onBeforeFlush(fn: () => void) {
   return () => beforeFlushHooks.delete(fn)
 }
 
+/** 主动刷新前必须确认本地写入成功，不能依赖卸载时来不及确认的网络请求。 */
+export function prepareForReload(): boolean {
+  if (accountSuspended) return true
+  let editorsSaved = true
+  for (const fn of beforeFlushHooks) {
+    try { fn() } catch { editorsSaved = false }
+  }
+  const pendingSaved = persistPending()
+  const cacheSaved = store().flushCache()
+  return editorsSaved && pendingSaved && cacheSaved
+}
+
 onBeforeLock(() => {
   if (accountSuspended) return
   for (const fn of beforeFlushHooks) { try { fn() } catch { /* 仍保留已进入队列的草稿 */ } }

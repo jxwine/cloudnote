@@ -115,6 +115,69 @@ function harness(overrides = {}, storage = new Map()) {
 const tests = []
 const test = (name, fn) => tests.push({ name, fn })
 
+test('网页更新前结算标题和输入法草稿并立即落盘，刷新后可恢复', () => {
+  const h = harness()
+  h.state().applyNote(note('N', '旧正文', 1, 1, { title: '' }))
+  h.sync.onBeforeFlush(() => h.sync.queueSave('N', { title: '中文标题', content: '<p>尚在防抖期的中文正文</p>' }))
+  assert.equal(h.sync.prepareForReload(), true)
+  assert.equal(h.pending('N').title, '中文标题')
+  assert.equal(h.pending('N').content, '<p>尚在防抖期的中文正文</p>')
+  const cache = JSON.parse(h.storage.get('cloudnote.cache'))
+  assert.equal(cache.notes.N.title, '中文标题')
+  assert.equal(cache.notes.N.content, '<p>尚在防抖期的中文正文</p>')
+  const restarted = harness({}, h.storage)
+  assert.equal(restarted.state().notes.N.content, '<p>尚在防抖期的中文正文</p>')
+})
+
+test('网页更新不等待在途网络请求，仍保存请求之后新输入的草稿', async () => {
+  const gate = deferred()
+  let calls = 0
+  const h = harness({ updateNote: async (id, patch) => {
+    if (++calls === 1) return gate.promise
+    return note(id, patch.content, 3, 3)
+  } })
+  h.state().applyNote(note('N', '旧正文'))
+  h.sync.queueSave('N', { content: '请求中的正文' })
+  const saving = h.sync.flushNote('N')
+  await tick()
+  h.sync.queueSave('N', { content: '请求之后继续输入的正文' })
+  assert.equal(h.sync.prepareForReload(), true)
+  assert.equal(h.pending('N').content, '请求之后继续输入的正文')
+  assert.equal(JSON.parse(h.storage.get('cloudnote.cache')).notes.N.content, '请求之后继续输入的正文')
+  const restarted = harness({}, new Map(h.storage))
+  assert.equal(restarted.state().notes.N.content, '请求之后继续输入的正文')
+  gate.resolve(note('N', '请求中的正文', 2, 2))
+  await saving
+  assert.equal(h.state().notes.N.content, '请求之后继续输入的正文')
+})
+
+test('网页更新时草稿或缓存存储失败均阻止刷新且保留内存改动', () => {
+  for (const key of ['cloudnote.pending', 'cloudnote.cache']) {
+    const h = harness()
+    h.state().applyNote(note('N', '旧正文'))
+    h.sync.queueSave('N', { content: '不能丢失的新正文' })
+    const set = h.localStorage.setItem
+    h.localStorage.setItem = (name, value) => {
+      if (name === key) throw new Error('QuotaExceededError')
+      set(name, value)
+    }
+    assert.equal(h.sync.prepareForReload(), false)
+    assert.equal(h.state().notes.N.content, '不能丢失的新正文')
+    assert.equal(h.sync.hasPending('N'), true)
+    h.localStorage.setItem = set
+    assert.equal(h.sync.prepareForReload(), true, '存储恢复后可重新尝试')
+  }
+})
+
+test('网页更新时编辑器结算失败阻止刷新，但仍落盘其它编辑器的草稿', () => {
+  const h = harness()
+  h.state().applyNote(note('N', '旧正文'))
+  h.sync.onBeforeFlush(() => { throw new Error('editor unavailable') })
+  h.sync.onBeforeFlush(() => h.sync.queueSave('N', { content: '其它编辑器的新正文' }))
+  assert.equal(h.sync.prepareForReload(), false)
+  assert.equal(h.pending('N').content, '其它编辑器的新正文')
+})
+
 test('手动同步先结算标题、重放队列、提交草稿，再拉取云端更新', async () => {
   const events = []
   const h = harness({

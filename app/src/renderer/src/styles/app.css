@@ -1110,6 +1110,28 @@ textarea {
   margin-top: 14px;
 }
 
+/* 网页新代码提示：不抢焦点，保持编辑区可用；弹窗仍在提示上方。 */
+.web-update-notice {
+  position: fixed;
+  z-index: 240;
+  top: calc(56px + var(--safe-top, env(safe-area-inset-top, 0px)));
+  right: max(16px, env(safe-area-inset-right, 0px));
+  width: min(380px, calc(100vw - 32px));
+  padding: 16px;
+  border: 1px solid var(--accent-line);
+  border-radius: 12px;
+  background: var(--raised);
+  color: var(--text);
+  box-shadow: var(--shadow-pop);
+}
+
+.web-update-notice strong { font-size: 15px; }
+.web-update-notice p { margin: 8px 0 0; color: var(--text-2); line-height: 1.6; }
+.web-update-notice .web-update-error { color: var(--danger); }
+.web-update-actions { display: flex; justify-content: flex-end; align-items: center; gap: 8px; margin-top: 12px; }
+html[data-viewport='phone'] .web-update-actions button,
+html[data-touch] .web-update-actions button { min-height: 44px; }
+
 /* ============================ 按钮 ============================ */
 
 .btn-primary {
