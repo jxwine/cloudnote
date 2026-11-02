@@ -156,7 +156,13 @@ export function markBooting(file: string): void {
 }
 
 export function clearBooting(): void {
-  rmSync(bootMarker(), { force: true })
+  try {
+    const marker = bootMarker()
+    const { pid } = JSON.parse(readFileSync(marker, 'utf8')) as { pid?: number }
+    if (pid === process.pid) rmSync(marker, { force: true })
+  } catch {
+    /* 没有标记或无法清理时，不影响正常启动和退出 */
+  }
 }
 
 /**

@@ -18,23 +18,28 @@ const log = (msg: string) => console.log('[loader] ' + msg)
 const bundledVersion = (JSON.parse(readFileSync(join(__dirname, '../../package.json'), 'utf8')) as { version: string })
   .version
 
-const hot = app.isPackaged ? pickHotPackage(bundledVersion, log) : null
+// 必须先拿锁：第二次双击只唤醒已有窗口，不能写启动标记，否则它退出后
+// 下一次启动会把正常热包误判为崩溃并拉黑。index 兼容旧 loader，复用这里的锁。
+if (!app.requestSingleInstanceLock()) app.quit()
+else {
+  const hot = app.isPackaged ? pickHotPackage(bundledVersion, log) : null
 
-if (hot) {
-  log(`从热更新包启动 ${hot.version}：${hot.file}`)
-  // 主进程靠这个知道自己是从哪份起的：清理时跳过它，首帧之后清掉启动标记
-  process.env.CLOUDNOTE_HOT_ASAR = hot.file
-  markBooting(hot.file)
-  try {
-    require(join(hot.file, hot.main))
-  } catch (err) {
-    // 主模块加载就炸了（语法错误之类）。它可能已经注册了一半的 app 事件，
-    // 在同一个进程里再加载自带的会叠出两份窗口和托盘；干脆重启：
-    // 启动标记还在，下一次 pickHotPackage 会把这个包隔离掉，从自带版本起。
-    console.error('[loader] 热更新包加载失败，重启回退到自带版本', err)
-    app.relaunch()
-    app.exit(1)
+  if (hot) {
+    log(`从热更新包启动 ${hot.version}：${hot.file}`)
+    // 主进程靠这个知道自己是从哪份起的：清理时跳过它，首帧之后清掉启动标记
+    process.env.CLOUDNOTE_HOT_ASAR = hot.file
+    markBooting(hot.file)
+    try {
+      require(join(hot.file, hot.main))
+    } catch (err) {
+      // 主模块加载就炸了（语法错误之类）。它可能已经注册了一半的 app 事件，
+      // 在同一个进程里再加载自带的会叠出两份窗口和托盘；干脆重启：
+      // 启动标记还在，下一次 pickHotPackage 会把这个包隔离掉，从自带版本起。
+      console.error('[loader] 热更新包加载失败，重启回退到自带版本', err)
+      app.relaunch()
+      app.exit(1)
+    }
+  } else {
+    require(join(__dirname, 'index.js'))
   }
-} else {
-  require(join(__dirname, 'index.js'))
 }

@@ -256,9 +256,13 @@ function startBundledServer(): void {
  * 没有这道锁就会起第二个实例——打包版还会再 fork 一个本地服务去抢 4471 端口。
  * 后来的那个实例直接退出，把已有窗口叫到前台就行。
  */
-const isPrimaryInstance = app.requestSingleInstanceLock()
-if (!isPrimaryInstance) app.quit()
-else app.on('second-instance', showWindow)
+const isPrimaryInstance = app.hasSingleInstanceLock() || app.requestSingleInstanceLock()
+if (!isPrimaryInstance) {
+  // 旧安装包的 loader 在拿锁前就写了标记；主动退出不是热包崩溃。
+  // 只清当前进程自己的标记，不能干扰另一个仍在启动的主实例。
+  if (hotAsar) clearBooting()
+  app.quit()
+} else app.on('second-instance', showWindow)
 
 app.whenReady().then(() => {
   if (!isPrimaryInstance) return
