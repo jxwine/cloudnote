@@ -3,7 +3,7 @@ import { session } from '@/lib/api'
 import { isDesktop, desktop, isNative } from '@/lib/platform'
 import { DownloadLinks } from './DownloadLinks'
 import { isTouch } from '@/lib/viewport'
-import { useStore, useBindings, TYPOGRAPHY, type ThemeMode } from '@/lib/store'
+import { useStore, useBindings, FONT_OPTIONS, TYPOGRAPHY, type FontFamily, type ThemeMode } from '@/lib/store'
 import {
   SHORTCUTS,
   EDITOR_SHORTCUTS,
@@ -60,6 +60,14 @@ export function SettingsDialog({ onClose, onCheckUpdate, newVersion }: Props) {
 
   const themeMode = useStore((s) => s.themeMode)
   const setThemeMode = useStore((s) => s.setThemeMode)
+  const fontFamily = useStore((s) => s.fontFamily)
+  const setFontFamily = useStore((s) => s.setFontFamily)
+  const fontSize = useStore((s) => s.fontSize)
+  const setFontSize = useStore((s) => s.setFontSize)
+  const isPhone = useStore((s) => s.viewport === 'phone')
+  const fontSizeRange = isPhone
+    ? { ...TYPOGRAPHY.fontSize, min: TYPOGRAPHY.fontSize.phoneMin, default: TYPOGRAPHY.fontSize.phoneMin }
+    : TYPOGRAPHY.fontSize
   const lineHeight = useStore((s) => s.lineHeight)
   const setLineHeight = useStore((s) => s.setLineHeight)
   const paragraphSpacing = useStore((s) => s.paragraphSpacing)
@@ -199,6 +207,36 @@ export function SettingsDialog({ onClose, onCheckUpdate, newVersion }: Props) {
                         </button>
                       ))}
                     </div>
+                  </Row>
+                  <Row title="字体" hint="调整笔记字体，未安装的字体会使用系统替代字体">
+                    <div className="font-picker">
+                      <button
+                        className={'reset-link' + (fontFamily === 'system' ? '' : ' is-visible')}
+                        aria-label="字体恢复默认"
+                        tabIndex={fontFamily === 'system' ? -1 : 0}
+                        onClick={() => setFontFamily('system')}
+                      >
+                        默认
+                      </button>
+                      <select
+                        aria-label="字体"
+                        value={fontFamily}
+                        onChange={(e) => setFontFamily(e.target.value as FontFamily)}
+                      >
+                        {FONT_OPTIONS.map((font) => (
+                          <option key={font.value} value={font.value}>{font.label}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </Row>
+                  <Row title="字号" hint={isPhone ? '立即生效并保存在本机，手机最小字号为 16px' : '调整正文大小，立即生效并保存在本机'}>
+                    <Slider
+                      label="字号"
+                      range={fontSizeRange}
+                      value={Math.max(fontSizeRange.min, fontSize)}
+                      onChange={setFontSize}
+                      formatValue={(value) => `${value} px`}
+                    />
                   </Row>
                   <Row title="行距" hint="正文每行的高度，拖的时候编辑器里立刻能看到">
                     <Slider
@@ -345,17 +383,20 @@ function Slider({
   range,
   value,
   onChange,
+  formatValue,
 }: {
   label: string
   range: { min: number; max: number; step: number; default: number }
   value: number
   onChange: (v: number) => void
+  formatValue?: (v: number) => string
 }) {
   const isDefault = Math.abs(value - range.default) < 1e-9
   return (
     <div className="slider">
       <button
         className={'reset-link' + (isDefault ? '' : ' is-visible')}
+        aria-label={`${label}恢复默认`}
         tabIndex={isDefault ? -1 : 0}
         onClick={() => onChange(range.default)}
       >
@@ -370,7 +411,9 @@ function Slider({
         value={value}
         onChange={(e) => onChange(Number(e.target.value))}
       />
-      <span className="slider-value">{value.toFixed(1)}</span>
+      <span className={'slider-value' + (formatValue ? ' is-wide' : '')}>
+        {formatValue ? formatValue(value) : value.toFixed(1)}
+      </span>
     </div>
   )
 }

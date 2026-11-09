@@ -21,12 +21,25 @@ interface CacheShape {
  */
 export type ThemeMode = 'system' | 'light' | 'dark'
 
+/** 只使用本机字体；缺少某种字体时由系统选择同类字体。 */
+export const FONT_OPTIONS = [
+  { value: 'system', label: '系统默认', family: 'var(--font-ui)' },
+  { value: 'sans', label: '黑体', family: '"Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", sans-serif' },
+  { value: 'serif', label: '宋体', family: 'SimSun, "Songti SC", "Noto Serif CJK SC", serif' },
+  { value: 'kai', label: '楷体', family: 'KaiTi, STKaiti, "Kaiti SC", cursive, serif' },
+  { value: 'mono', label: '等宽字体', family: 'var(--font-mono)' },
+] as const
+export type FontFamily = (typeof FONT_OPTIONS)[number]['value']
+const validFontFamily = (value: unknown): FontFamily =>
+  FONT_OPTIONS.find((font) => font.value === value)?.value ?? 'system'
+
 /**
  * 编辑器排版。行距是 line-height 的倍数，段间距是段落之间空多少个 em。
  * 段间距默认 1em 就是原来实际生效的值（被浏览器默认的 1em 外边距顶着）；
  * 行距原来是 1.8，用户嫌松，改成 1.5。
  */
 export const TYPOGRAPHY = {
+  fontSize: { min: 12, phoneMin: 16, max: 32, step: 0.5, default: 15.5 },
   lineHeight: { min: 1, max: 3, step: 0.1, default: 1.5 },
   paragraphSpacing: { min: 0, max: 2, step: 0.1, default: 1 },
 } as const
@@ -42,6 +55,8 @@ interface UiShape {
   leftWidth: number
   rightWidth: number
   themeMode: ThemeMode
+  fontFamily: FontFamily
+  fontSize: number
   lineHeight: number
   paragraphSpacing: number
   /** 只存用户改过的那几条快捷键，没改的走 shortcuts.ts 里的默认 */
@@ -78,6 +93,8 @@ const readUi = (): UiShape => {
     leftWidth: 248,
     rightWidth: 232,
     themeMode: 'system',
+    fontFamily: 'system',
+    fontSize: TYPOGRAPHY.fontSize.default,
     lineHeight: TYPOGRAPHY.lineHeight.default,
     paragraphSpacing: TYPOGRAPHY.paragraphSpacing.default,
     shortcuts: {},
@@ -86,6 +103,8 @@ const readUi = (): UiShape => {
     const raw = localStorage.getItem(UI_KEY)
     if (!raw) return fallback
     const ui = { ...fallback, ...(JSON.parse(raw) as Partial<UiShape>) }
+    ui.fontFamily = validFontFamily(ui.fontFamily)
+    ui.fontSize = clamp(ui.fontSize, TYPOGRAPHY.fontSize)
     // 存的东西可能被手改过或者来自以后放宽了范围的版本，读回来时按现在的范围夹一下
     ui.lineHeight = clamp(ui.lineHeight, TYPOGRAPHY.lineHeight)
     ui.paragraphSpacing = clamp(ui.paragraphSpacing, TYPOGRAPHY.paragraphSpacing)
@@ -173,6 +192,8 @@ interface State extends CacheShape, UiShape {
   setTheme(theme: 'light' | 'dark'): void
   /** 用户在设置里改外观：记住选择，并立刻按新选择推一个生效值出去 */
   setThemeMode(mode: ThemeMode): void
+  setFontFamily(family: FontFamily): void
+  setFontSize(v: number): void
   /** 编辑器行距 / 段间距，越界值会被夹回范围内 */
   setLineHeight(v: number): void
   setParagraphSpacing(v: number): void
@@ -217,13 +238,13 @@ export const useStore = create<State>((set, get) => {
   const writeUi = () => {
     const {
       leftOpen, rightOpen, expanded, activeNoteId, leftWidth, rightWidth,
-      themeMode, lineHeight, paragraphSpacing, shortcuts,
+      themeMode, fontFamily, fontSize, lineHeight, paragraphSpacing, shortcuts,
     } = get()
     localStorage.setItem(
       UI_KEY,
       JSON.stringify({
         leftOpen, rightOpen, expanded, activeNoteId, leftWidth, rightWidth,
-        themeMode, lineHeight, paragraphSpacing, shortcuts,
+        themeMode, fontFamily, fontSize, lineHeight, paragraphSpacing, shortcuts,
       })
     )
   }
@@ -432,7 +453,17 @@ export const useStore = create<State>((set, get) => {
       writeUi()
     },
 
-    // 滑块拖起来是连着触发的，走防抖那条
+    setFontFamily: (family) => {
+      set({ fontFamily: validFontFamily(family) })
+      writeUi()
+    },
+    setFontSize: (v) => {
+      set({ fontSize: clamp(v, TYPOGRAPHY.fontSize) })
+      // 外观数据很小，即时保存，调完字号就关闭也能保留。
+      writeUi()
+    },
+
+    // 行距、段间距沿用原有防抖保存
     setLineHeight: (v) => {
       set({ lineHeight: clamp(v, TYPOGRAPHY.lineHeight) })
       persistUi()

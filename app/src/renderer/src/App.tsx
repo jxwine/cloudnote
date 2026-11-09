@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { Editor } from '@tiptap/react'
-import { resolveTheme, useStore, useBindings, currentBindings } from '@/lib/store'
+import { FONT_OPTIONS, TYPOGRAPHY, resolveTheme, useStore, useBindings, currentBindings } from '@/lib/store'
 import { comboFromEvent, findShortcut, formatCombo } from '@/lib/shortcuts'
 import * as sync from '@/lib/sync'
 import { LoginView } from './components/LoginView'
@@ -121,13 +121,20 @@ function useTheme() {
   }, [theme])
 
   // 排版设置挂成 CSS 变量，app.css 里 .ProseMirror 读它们；登录页没有编辑器，挂上也无妨
+  const fontFamily = useStore((s) => s.fontFamily)
+  const fontSize = useStore((s) => s.fontSize)
+  const viewport = useStore((s) => s.viewport)
   const lineHeight = useStore((s) => s.lineHeight)
   const paragraphSpacing = useStore((s) => s.paragraphSpacing)
   useEffect(() => {
     const root = document.documentElement.style
+    root.setProperty('--font-doc', FONT_OPTIONS.find((font) => font.value === fontFamily)!.family)
+    // 手机保留原有 16px 下限，避免 iOS 聚焦正文时自动放大页面。
+    const displaySize = viewport === 'phone' ? Math.max(TYPOGRAPHY.fontSize.phoneMin, fontSize) : fontSize
+    root.setProperty('--doc-font-size', `${displaySize}px`)
     root.setProperty('--doc-line-height', String(lineHeight))
     root.setProperty('--doc-para-gap', `${paragraphSpacing}em`)
-  }, [lineHeight, paragraphSpacing])
+  }, [fontFamily, fontSize, viewport, lineHeight, paragraphSpacing])
 }
 
 /**
