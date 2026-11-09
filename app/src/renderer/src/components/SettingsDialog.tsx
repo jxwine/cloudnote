@@ -235,7 +235,7 @@ export function SettingsDialog({ onClose, onCheckUpdate, newVersion }: Props) {
                       range={fontSizeRange}
                       value={Math.max(fontSizeRange.min, fontSize)}
                       onChange={setFontSize}
-                      formatValue={(value) => `${value} px`}
+                      formatValue={String}
                     />
                   </Row>
                   <Row title="行距" hint="正文每行的高度，拖的时候编辑器里立刻能看到">
@@ -411,7 +411,7 @@ function Slider({
         value={value}
         onChange={(e) => onChange(Number(e.target.value))}
       />
-      <span className={'slider-value' + (formatValue ? ' is-wide' : '')}>
+      <span className="slider-value">
         {formatValue ? formatValue(value) : value.toFixed(1)}
       </span>
     </div>

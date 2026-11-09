@@ -3248,15 +3248,11 @@ body.is-reflowing .bubble-bar {
 }
 
 .slider-value {
-  min-width: 2.4em;
+  flex: 0 0 2.4em;
   text-align: right;
   font-size: 12.5px;
   font-variant-numeric: tabular-nums;
   color: var(--text-2);
-}
-
-.slider-value.is-wide {
-  min-width: 4em;
 }
 
 .font-picker {
