@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import { useStore, buildTree, type TreeNode } from '@/lib/store'
 import * as sync from '@/lib/sync'
+import { exportNote } from '@/lib/export'
 import { blockedLock, canReadNote, hasReadingLock, readingTitle } from '@/lib/readingLock'
 import { ReadingLockPane, readingLockMenuActions } from '../ReadingLock'
 import type { Note } from '@/lib/types'
@@ -11,7 +12,7 @@ import { Trash } from '../Trash'
 import { SyncChip } from '../SyncChip'
 import { FolderSheet } from './FolderSheet'
 import { openNotePage } from './MobileShell'
-import { IconLock, IconUnlock, IconBack, IconClose, IconFolder, IconFolderOpen, IconPlus, IconSearch, IconSettings, IconTrash } from '../Icons'
+import { IconExport, IconLock, IconUnlock, IconBack, IconClose, IconFolder, IconFolderOpen, IconPlus, IconSearch, IconSettings, IconTrash } from '../Icons'
 
 /** 卡片上的日期：今年只给月日，往年带年份 */
 export function cardDate(ts: number): string {
@@ -109,6 +110,7 @@ export function MobileHome({ folderId, setFolderId, onOpenSettings }: Props) {
 
   const cardActions = (note: Note) => [
     ...readingLockMenuActions({ kind: 'note', id: note.id }),
+    { label: '导出', icon: <IconExport size={16} />, disabled: !canReadNote(useStore.getState(), note), onSelect: () => void exportNote(note) },
     { label: '移出目录', disabled: !note.folderId || !canReadNote(useStore.getState(), note), onSelect: () => void sync.moveNote(note.id, null) },
     { label: '删除笔记', disabled: !canReadNote(useStore.getState(), note), danger: true, onSelect: () => void sync.deleteNote(note.id) },
   ]

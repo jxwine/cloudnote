@@ -554,7 +554,7 @@ function UnlockedEditorPane({ onEditorReady, scrollRef }: Props) {
               <IconHistory size={14} />
               历史版本
             </button>
-            <button className="meta-action" title="导出为 Markdown" onClick={() => void exportNote(note)}>
+            <button className="meta-action" title="导出" onClick={() => void exportNote(note)}>
               <IconExport size={14} />
               导出
             </button>

@@ -268,7 +268,7 @@ export function Sidebar() {
         <span className="panel-head-gap" />
         {sidebarView === 'tree' && (
           <>
-            <button className="icon-btn" title="导出全部为 Markdown" onClick={() => void exportAll()}>
+            <button className="icon-btn" title="全部导出" aria-label="全部导出" onClick={() => void exportAll()}>
               <IconExport size={17} />
             </button>
             <button className="icon-btn" title="新建目录" onClick={() => void sync.createFolder('新建目录')}>
@@ -489,7 +489,7 @@ function NoteRow(props: {
     'separator',
     { disabled: locked, label: '重命名', icon: <IconPencil size={16} />, onSelect: props.onStartRename },
     { disabled: locked, label: '移出目录', icon: <IconFolder size={16} />, onSelect: () => void sync.moveNote(note.id, null) },
-    { disabled: locked, label: '导出为 Markdown', icon: <IconExport size={16} />, onSelect: () => void exportNote(note) },
+    { disabled: locked, label: '导出', icon: <IconExport size={16} />, onSelect: () => void exportNote(note) },
     'separator',
     { disabled: locked, label: '删除笔记', icon: <IconTrash size={16} />, danger: true, onSelect: () => void sync.deleteNote(note.id) },
   ]

@@ -24,7 +24,7 @@ No native modules, no external database, no third-party service.
   images uploaded on paste or drop
 - **Organization**: drag notes into folders and reorder siblings, cross-cutting tags,
   full-text search, `Ctrl+P` quick jump
-- **Safety nets**: soft-delete trash, automatic version snapshots with restore, Markdown export
+- **Safety nets**: soft-delete trash, automatic version snapshots with restore, Markdown / Word / plain text export
 - **Lives in the tray**: closing the window only hides it; the app keeps running and keeps syncing
 - **Self-updating**: the client finds new versions on its own, downloads in-app, verifies the sha256, launches the installer
 - **Web admin**: manage accounts and publish client builds; the web app also offers the installer for download
@@ -123,9 +123,14 @@ keeping the latest 40 per note, so continuous typing does not flood the history.
 "历史版本" (History) at the top right of a note previews and restores any version;
 restoring also snapshots the current content, so you can always go back.
 
-**Export**: a single note (right-click → export as Markdown), a folder (right-click the folder),
-or everything (the export button at the top of the sidebar). Bulk export mirrors the original
-folder hierarchy on disk, numbering notes that share a name.
+**Export**: a single note (editor → Export, or right-click → Export), a folder (right-click the folder),
+or everything (Export all at the top of the sidebar; on phones, inside the folder panel).
+Choose Markdown (.md), Word (.docx), or plain text (.txt) in the format dialog.
+Desktop bulk export preserves the folder hierarchy with separate files and unique names;
+web and Android exports combine the selected range into one document with folder paths.
+Word uses standard DOCX with common formatting, lists, tasks, tables, links and embedded images.
+Unavailable images retain a placeholder and their original link. TXT uses UTF-8 with a BOM for older Windows Notepad.
+Older desktop bridges fall back to file downloads for Word / TXT; Android requires the Filesystem and Share plugins.
 
 ## Find and replace
 
@@ -373,7 +378,7 @@ The version follows `app/package.json` (`versionCode` = major×10000 + minor×10
 
 **Differences from the web version** (all behind `isNative` in `lib/platform.ts`):
 
-- Markdown export goes through the system share sheet (a WebView can't download `blob:` URLs).
+- Markdown / Word / plain text export goes through the system share sheet (a WebView can't download `blob:` URLs).
 - `http://` self-hosted servers are allowed (`usesCleartextTraffic` + `allowMixedContent`), so a LAN
   install works without certificates.
 - Android 15 enforces edge-to-edge and breaks `adjustResize`; `MainActivity` folds the keyboard height

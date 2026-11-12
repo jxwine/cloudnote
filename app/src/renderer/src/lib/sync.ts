@@ -1000,6 +1000,12 @@ export function onBeforeFlush(fn: () => void) {
   return () => beforeFlushHooks.delete(fn)
 }
 
+/** 导出前结算输入法与标题；本地存储写满时仍允许用户导出内存里的最新内容。 */
+export function prepareForExport(): void {
+  if (accountSuspended) return
+  for (const fn of beforeFlushHooks) fn()
+}
+
 /** 主动刷新前必须确认本地写入成功，不能依赖卸载时来不及确认的网络请求。 */
 export function prepareForReload(): boolean {
   if (accountSuspended) return true

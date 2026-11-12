@@ -3,8 +3,9 @@ import { useStore, buildTree, type TreeNode } from '@/lib/store'
 import { blockedLock, canReadNote, hasReadingLock, readingTitle } from '@/lib/readingLock'
 import { readingLockMenuActions } from '../ReadingLock'
 import * as sync from '@/lib/sync'
+import { exportAll } from '@/lib/export'
 import { useContextMenu } from '../ContextMenu'
-import { IconLock, IconUnlock, IconFolder, IconFolderPlus, IconMore, IconNote, IconTag, IconTrash } from '../Icons'
+import { IconExport, IconLock, IconUnlock, IconFolder, IconFolderPlus, IconMore, IconNote, IconTag, IconTrash } from '../Icons'
 
 interface Props {
   /** browse：首页的目录面板，带标签 / 回收站入口和目录管理；pick：只挑一个目录（移动笔记用） */
@@ -68,6 +69,8 @@ export function FolderSheet({ mode, current, onPick, onView, onClose }: Props) {
       onSelect: () => void sync.createFolder('新建目录', row.node.folder.id),
     },
     { label: '重命名', disabled: !!blockedLock(useStore.getState(), { kind: 'folder', id: row.node.folder.id }), onSelect: () => void rename(row.node.folder.id, row.node.folder.name) },
+    { label: '导出这个目录', icon: <IconExport size={15} />, disabled: !!blockedLock(useStore.getState(), { kind: 'folder', id: row.node.folder.id }),
+      onSelect: () => { onClose(); void exportAll({ folderId: row.node.folder.id }) } },
     'separator' as const,
     { label: '删除目录', disabled: !!blockedLock(useStore.getState(), { kind: 'folder', id: row.node.folder.id }), danger: true, onSelect: () => void sync.deleteFolder(row.node.folder.id) },
   ]
@@ -92,6 +95,10 @@ export function FolderSheet({ mode, current, onPick, onView, onClose }: Props) {
           )}
         </div>
         <div className="m-sheet-body">
+          {mode === 'browse' && <button className="m-sheet-row" onClick={() => { onClose(); void exportAll() }}>
+            <IconExport size={18} className="m-sheet-icon" />
+            <span className="m-sheet-label">全部导出</span>
+          </button>}
           <button className={rowClass(current === null) + ' is-all'} onClick={() => onPick(null)}>
             <IconNote size={18} className="m-sheet-icon" />
             <span className="m-sheet-label">{mode === 'pick' ? '根目录' : '所有笔记'}</span>

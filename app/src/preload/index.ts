@@ -18,9 +18,15 @@ const api = {
   /** 开机自启：读写的都是系统登录项本身，没有另存的副本 */
   getAutoLaunch: () => ipcRenderer.invoke('autolaunch:get') as Promise<boolean>,
   setAutoLaunch: (on: boolean) => ipcRenderer.invoke('autolaunch:set', on) as Promise<boolean>,
-  exportFile: (name: string, content: string) =>
+  /** 旧壳没有该标记，新页面不得向旧 UTF-8 写入接口传 Word 二进制。 */
+  exportBinary: true,
+  chooseExportTarget: (name: string, bulk: boolean) =>
+    ipcRenderer.invoke('export:choose-target', name, bulk) as Promise<{ ticket: string; path: string } | null>,
+  writeExportTarget: (ticket: string, files: { path: string; content: string | Uint8Array }[]) =>
+    ipcRenderer.invoke('export:write-target', ticket, files) as Promise<{ ok: boolean; path?: string; count?: number }>,
+  exportFile: (name: string, content: string | Uint8Array) =>
     ipcRenderer.invoke('export:file', name, content) as Promise<{ ok: boolean; path?: string }>,
-  exportFolder: (files: { path: string; content: string }[]) =>
+  exportFolder: (files: { path: string; content: string | Uint8Array }[]) =>
     ipcRenderer.invoke('export:folder', files) as Promise<{ ok: boolean; path?: string; count?: number }>,
   reveal: (path: string) => ipcRenderer.invoke('shell:reveal', path) as Promise<void>,
 

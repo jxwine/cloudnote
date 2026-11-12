@@ -1,12 +1,13 @@
 import { app, shell, BrowserWindow, ipcMain, nativeTheme, dialog, Tray, Menu, net } from 'electron'
 import { join, dirname, basename } from 'node:path'
 import { fork, type ChildProcess } from 'node:child_process'
-import { existsSync, readFileSync, writeFileSync, mkdirSync, createWriteStream, rmSync, renameSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync, mkdirSync, mkdtempSync, createWriteStream, rmSync, renameSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import { cleanupUpdates, clearBooting, compareVersion, inspectHotPackage, rememberRejected, runtimeMajor, updatesDir } from './hot'
 import { withoutAsar } from './asar'
+import { registerExportTargets } from './exportTarget'
 
 /** 由构建注入：打包时没指定远程服务器才需要自带一份后端 */
 declare const __USE_BUNDLED_SERVER__: boolean
@@ -284,22 +285,27 @@ app.whenReady().then(() => {
   }))
 
   /** 导出单篇：弹保存对话框 */
-  ipcMain.handle('export:file', async (_e, name: string, content: string) => {
+  registerExportTargets(() => mainWindow)
+  // 保留旧接口：兼容仍在运行旧页面的桌面壳。
+  ipcMain.handle('export:file', async (_e, name: string, content: string | Uint8Array) => {
     if (!mainWindow) return { ok: false }
+    const format = name.endsWith('.docx') ? { name: 'Word 文档', extensions: ['docx'] }
+      : name.endsWith('.txt') ? { name: '纯文本', extensions: ['txt'] }
+      : { name: 'Markdown', extensions: ['md'] }
     const res = await dialog.showSaveDialog(mainWindow, {
       title: '导出笔记',
       defaultPath: join(app.getPath('documents'), name),
-      filters: [{ name: 'Markdown', extensions: ['md'] }],
+      filters: [format],
     })
     if (res.canceled || !res.filePath) return { ok: false }
-    writeFileSync(res.filePath, content, 'utf8')
+    writeFileSync(res.filePath, typeof content === 'string' ? content : Buffer.from(content), 'utf8')
     return { ok: true, path: res.filePath }
   })
 
   /** 批量导出：选个目录，按笔记原来的目录结构铺开写进去 */
   ipcMain.handle(
     'export:folder',
-    async (_e, files: { path: string; content: string }[]) => {
+    async (_e, files: { path: string; content: string | Uint8Array }[]) => {
       if (!mainWindow) return { ok: false }
       const res = await dialog.showOpenDialog(mainWindow, {
         title: '选择导出位置',
@@ -307,11 +313,11 @@ app.whenReady().then(() => {
       })
       if (res.canceled || !res.filePaths[0]) return { ok: false }
 
-      const root = join(res.filePaths[0], `云笔记导出-${new Date().toISOString().slice(0, 10)}`)
+      const root = mkdtempSync(join(res.filePaths[0], `云笔记导出-${new Date().toISOString().slice(0, 10)}-`))
       for (const file of files) {
         const full = join(root, file.path)
         mkdirSync(dirname(full), { recursive: true })
-        writeFileSync(full, file.content, 'utf8')
+        writeFileSync(full, typeof file.content === 'string' ? file.content : Buffer.from(file.content), 'utf8')
       }
       return { ok: true, path: root, count: files.length }
     }

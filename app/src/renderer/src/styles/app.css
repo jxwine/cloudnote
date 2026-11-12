@@ -1775,6 +1775,29 @@ body.is-reflowing .bubble-bar {
   flex: 1;
 }
 
+.export-dialog { max-height: 100%; overflow-y: auto; }
+.export-dialog .dialog-title { margin-top: 0; font-size: 16px; }
+.export-formats { margin: 0; padding: 0; border: 0; min-width: 0; }
+.export-formats legend { padding: 0; margin-bottom: 10px; color: var(--text-2); font-size: 13px; }
+.export-option {
+  display: flex; align-items: center; gap: 12px; padding: 12px;
+  margin-bottom: 8px; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--surface); cursor: pointer;
+}
+.export-option.is-selected { border-color: var(--accent); background: var(--accent-soft); }
+.export-option input[type='radio'] {
+  width: 18px; height: 18px; padding: 0; margin: 0; flex: 0 0 18px;
+  accent-color: var(--accent); box-shadow: none;
+}
+.export-option:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
+.export-option > span { min-width: 0; }
+.export-option strong { display: block; font-size: 14px; color: var(--text); }
+.export-option small { font-weight: 400; color: var(--text-2); }
+.export-option span span { display: block; margin-top: 4px; font-size: 12px; line-height: 1.5; color: var(--text-2); }
+.export-hint { margin: 10px 0 0; color: var(--text-2); font-size: 12px; line-height: 1.6; }
+.export-dialog .dialog-actions { justify-content: flex-end; }
+.export-dialog .dialog-actions button { min-height: 44px; min-width: 72px; }
+
 .btn-ghost.is-danger {
   color: var(--danger);
 }

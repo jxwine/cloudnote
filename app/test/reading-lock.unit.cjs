@@ -184,10 +184,15 @@ async function main() {
 
   const outputs = []
   const messages = []
+  // 上面的软删祖先场景已验证完；导出目录场景使用当前仍存在的目录。
+  state.folders.outer.deleted = false
   state.showToast = toast => messages.push(toast.message)
   const exporter = load('export', {
     './readingLock': locks,
-    './search': search,
+    './exportDialog': { chooseExportFormat: async () => 'md' },
+    './exportFormats': load('exportFormats', { './markdown': { safeFileName: text => text } }),
+    './accountStorage': { getAccountEpoch: () => 0 },
+    './sync': { prepareForExport: () => {} },
     './store': { useStore: { getState: () => state } },
     './markdown': { safeFileName: text => text, htmlToMarkdown: text => text, noteToMarkdownFile: note => note.content },
     './platform': { isDesktop: true, isNative: false, desktop: {
@@ -205,7 +210,7 @@ async function main() {
   assert.equal(outputs.length, 1, '不受保护目录仍可正常导出')
   state.lockGrants['folder:outer'] = 'outer-v1'
   await exporter.exportAll({ folderId: 'outer' })
-  assert.equal(outputs.length, 2, '所需授权均有效后可导出整个目录')
+  assert.equal(outputs.length, 2, '所需授权均有效后可导出整个目录：' + messages.join('；'))
   state.notes.secret.content = '<p>latest</p>'
   await exporter.exportNote({ ...state.notes.secret, content: '<p>stale</p>' })
   assert.equal(outputs[2].content, '<p>latest</p>', '导出使用当前账号中的最新对象')

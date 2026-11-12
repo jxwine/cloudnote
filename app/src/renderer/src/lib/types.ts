@@ -190,9 +190,12 @@ declare global {
       /** 开机自启，以系统登录项为准；set 返回写完后的真实状态 */
       getAutoLaunch(): Promise<boolean>
       setAutoLaunch(on: boolean): Promise<boolean>
-      exportFile(name: string, content: string): Promise<{ ok: boolean; path?: string }>
+      exportBinary?: boolean
+      chooseExportTarget?(name: string, bulk: boolean): Promise<{ ticket: string; path: string } | null>
+      writeExportTarget?(ticket: string, files: { path: string; content: string | Uint8Array }[]): Promise<{ ok: boolean; path?: string; count?: number }>
+      exportFile(name: string, content: string | Uint8Array): Promise<{ ok: boolean; path?: string }>
       exportFolder(
-        files: { path: string; content: string }[]
+        files: { path: string; content: string | Uint8Array }[]
       ): Promise<{ ok: boolean; path?: string; count?: number }>
       reveal(path: string): Promise<void>
       onThemeChange(cb: (theme: 'light' | 'dark') => void): () => void
