@@ -11,6 +11,7 @@ const SAVE_DEBOUNCE = 700
 const SAVE_MAX_WAIT = 5000
 /** 同一篇连续失败这么多次就放弃，别让它一直卡在待保存里 */
 const MAX_SAVE_RETRY = 3
+const SESSION_REVOKED_CODE = 4004
 
 /* ------------------------------------------------------------------ *
  * 冲突策略
@@ -354,10 +355,14 @@ function connectWs() {
     handleMessage(msg)
   }
 
-  socket.onclose = () => {
+  socket.onclose = (event) => {
     if (ws !== socket) return
     ws = null
     if (stopped) return
+    if (event?.code === SESSION_REVOKED_CODE) {
+      onAuthExpired('此设备已被踢出，请重新登录')
+      return
+    }
     store().setStatus('offline', 0)
     scheduleReconnect()
   }
@@ -659,7 +664,7 @@ async function saveDraft(noteId: string, epoch: number) {
   }
 }
 
-function onAuthExpired(reason: string) {
+export function onAuthExpired(reason: string) {
   if (store().authExpired) return
   stop()
   store().setStatus('error')

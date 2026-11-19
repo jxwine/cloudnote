@@ -178,6 +178,42 @@ async function main() {
     await A.slowNetwork(0)
   })
 
+  await scenario('在线端管理：踢出后立即要求重新登录，草稿可以补传', async (expect) => {
+    const [A, B] = await freshPair()
+    const email = lastEmail
+    await ui.newNote(B)
+    await ui.waitSynced(B)
+    const [note] = await ui.notes(B)
+    await ui.rejectInPage(B, { method: 'PATCH', urlEndsWith: `/api/notes/${note.id}`, times: 30 })
+    await ui.focusBody(B)
+    await B.type('被踢前的本地草稿')
+    await until(() => B.evaluate(() => localStorage.getItem('cloudnote.pending')?.includes('被踢前的本地草稿')), { what: '被踢前的草稿已保存到本地' })
+
+    await A.evaluate(() => { document.querySelector('.peer-trigger').click(); return true })
+    await until(() => A.evaluate(() => document.querySelectorAll('.devices-dialog .device-row').length === 2), { what: '在线设备列表显示两端' })
+    expect('当前端只有标记，另一端可踢出', { ok: await A.evaluate(() => {
+      const [current, other] = document.querySelectorAll('.devices-dialog .device-row')
+      return current.querySelector('.device-current')?.textContent === '当前端' && !current.querySelector('button') && !!other.querySelector('button')
+    }) })
+    await A.evaluate(() => { document.querySelector('.device-row button').click(); return true })
+    await A.evaluate(() => { document.querySelector('.devices-confirm button').click(); return true })
+    expect('取消确认后另一端仍在线', { ok: await A.evaluate(() =>
+      !document.querySelector('.devices-confirm') && document.querySelectorAll('.device-row').length === 2) })
+
+    await A.evaluate(() => { document.querySelector('.device-row button').click(); return true })
+    await A.evaluate(() => { document.querySelector('.devices-confirm .is-danger').click(); return true })
+    await until(async () => (await ui.authDialogText(B)).includes('此设备已被踢出'), { what: '被踢端立即提示重新登录' })
+    await until(() => A.evaluate(() => !document.querySelector('.peer-trigger') && document.querySelectorAll('.device-row').length === 1), { what: '在线端数和弹窗列表更新' })
+    expect('当前端仍保持登录，被踢端提示草稿已保留', { ok: !(await ui.authDialogText(A)) && (await ui.authDialogText(B)).includes('没有丢') })
+
+    await ui.restoreFetch(B)
+    await B.evaluate(() => { document.querySelector('.auth-expired-reason').closest('.dialog').querySelector('.btn-primary').click(); return true })
+    await ui.loginThroughForm(B, email, PASSWORD)
+    await until(async () => (await ui.serverNotes(A)).some((n) => n.text.includes('被踢前的本地草稿')), { what: '重新登录后草稿自动补传' })
+    await until(() => A.evaluate(() => document.querySelectorAll('.device-row').length === 2), { what: '另一端重新登录后弹窗自动更新' })
+    expect('同账号重新登录后恢复同步和在线显示', { ok: true })
+  })
+
   // ---------------------------------------------------------------
   await scenario('归档冲突副本的请求失败时，也不许吃掉对方的内容', async (expect) => {
     const [A, B] = await freshPair()

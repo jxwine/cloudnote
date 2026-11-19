@@ -39,6 +39,14 @@ CREATE TABLE IF NOT EXISTS users (
   last_active_at INTEGER
 );
 
+CREATE TABLE IF NOT EXISTS revoked_sessions (
+  user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  id         TEXT NOT NULL,
+  expires_at INTEGER NOT NULL,
+  PRIMARY KEY (user_id, id)
+);
+CREATE INDEX IF NOT EXISTS idx_revoked_sessions_expiry ON revoked_sessions(expires_at);
+
 CREATE TABLE IF NOT EXISTS folders (
   id         TEXT PRIMARY KEY,
   user_id    TEXT NOT NULL,

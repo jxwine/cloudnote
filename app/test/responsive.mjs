@@ -15,7 +15,7 @@ import { tmpdir } from 'node:os'
 import { rmSync, mkdirSync, writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { bootEnv, shutdown } from './harness.mjs'
-import { sleep, reattach } from './cdp.mjs'
+import { sleep, reattach, until } from './cdp.mjs'
 import * as ui from './app.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -132,10 +132,12 @@ const click = (sel) =>
   }, sel)
 
 async function checkSyncControls(label) {
+  await until(() => dev.evaluate(() => !!document.querySelector('.peer-trigger')), { what: '在线端入口' })
   const m = await dev.evaluate(() => {
     const state = document.querySelector('.sync-chip')
     const button = document.querySelector('.sync-manual')
-    if (!state || !button) return null
+    const trigger = document.querySelector('.peer-trigger')
+    if (!state || !button || !trigger) return null
     const a = state.getBoundingClientRect()
     const b = button.getBoundingClientRect()
     const header = button.closest('header')
@@ -148,13 +150,72 @@ async function checkSyncControls(label) {
       iconOnly: !!button.querySelector('svg') && !button.textContent.trim() && !!button.getAttribute('aria-label'),
       fits: controls.every(r => r.left >= 0 && r.right <= innerWidth + 0.5) && noOverlap,
       touchHeight: b.height,
+      peerHeight: trigger.getBoundingClientRect().height,
+      peerWidth: trigger.getBoundingClientRect().width,
       theme: document.documentElement.dataset.theme,
     }
   })
   check(`${label} 手动同步独立排列在状态旁`, !!m?.separate, JSON.stringify(m))
   check(`${label} 使用有无障碍名称的纯图标按钮`, !!m?.iconOnly)
   check(`${label} 顶栏操作均在屏内且互不重叠`, !!m?.fits)
-  if (label.includes('phone')) check(`${label} 同步按钮触控高度`, m?.touchHeight >= 40)
+  if (label.includes('phone')) check(`${label} 同步与在线端按钮触控高度`, m?.touchHeight >= 40 && m?.peerHeight >= 44)
+  if (label.includes('tablet')) check(`${label} 在线端按钮触控区域`, m?.peerWidth >= 44 && m?.peerHeight >= 38)
+}
+
+async function checkDevicesDialog(label) {
+  await click('.peer-trigger')
+  await until(() => dev.evaluate(() => document.querySelectorAll('.device-row').length === 2), { what: '两条在线端信息' })
+  const fits = await dev.evaluate(() => {
+    const dialog = document.querySelector('.devices-dialog')
+    const rect = dialog.getBoundingClientRect()
+    return dialog.open && rect.left >= 0 && rect.top >= 0 && rect.right <= innerWidth && rect.bottom <= innerHeight &&
+      dialog.scrollWidth === dialog.clientWidth && document.querySelector('.device-row button').getBoundingClientRect().height >= 44
+  })
+  check(`${label} 在线设备弹窗和操作按钮位于视口内`, fits)
+  await shot(`${label}-devices`)
+  await press('Escape', 'Escape', 27)
+  await until(() => dev.evaluate(() => document.activeElement === document.querySelector('.peer-trigger')), { what: '关闭后焦点恢复到端数入口' })
+  check(`${label} Escape 关闭设备弹窗`, await dev.evaluate(() => !document.querySelector('.devices-dialog')))
+}
+
+async function openPeer(email) {
+  const login = await fetch(ui.SERVER + '/api/auth/login', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ email, password: PASSWORD }),
+  })
+  if (!login.ok) throw new Error('模拟在线端登录失败')
+  const { token } = await login.json()
+  const socket = new WebSocket(ui.SERVER.replace(/^http/, 'ws') + `/ws?token=${encodeURIComponent(token)}&clientId=responsive-peer`)
+  await new Promise((resolve, reject) => {
+    socket.addEventListener('message', ({ data }) => { if (JSON.parse(data).type === 'ready') resolve() })
+    socket.addEventListener('error', reject, { once: true })
+  })
+  return socket
+}
+
+async function checkScrollableDevices(email, label) {
+  const peers = []
+  try {
+    for (let i = 0; i < 7; i++) peers.push(await openPeer(email))
+    await click('.peer-trigger')
+    await until(() => dev.evaluate(() => document.querySelectorAll('.device-row').length === 9), { what: '九条在线端信息' })
+    await click('.device-row button')
+    const panel = await dev.evaluate(() => {
+      const dialog = document.querySelector('.devices-dialog')
+      const list = dialog.querySelector('.devices-list')
+      const last = list.lastElementChild
+      list.scrollTop = list.scrollHeight
+      const button = dialog.querySelector('.devices-confirm .is-danger').getBoundingClientRect()
+      return list.scrollTop > 0 && last.getBoundingClientRect().bottom <= list.getBoundingClientRect().bottom + 1 &&
+        button.height >= 44 && button.right <= innerWidth && button.bottom <= innerHeight
+    })
+    check(`${label} 长列表可滚动至末尾，踢出确认仍在屏内`, panel)
+    await shot(`${label}-devices-scroll`)
+    await press('Escape', 'Escape', 27)
+  } finally {
+    for (const peer of peers) peer.close()
+  }
+  await until(() => dev.evaluate(() => document.querySelector('.peer-trigger')?.textContent === '2 端'), { what: '端数恢复为两端' })
 }
 
 async function run() {
@@ -170,12 +231,7 @@ async function run() {
   await sleep(2500)
   dev = await reattach(d, { urlPart: '5273', name: '设备A' })
   await ui.waitReady(dev)
-  const token = await dev.evaluate(() => localStorage.getItem('cloudnote.token'))
-  extraPeer = new WebSocket(ui.SERVER.replace(/^http/, 'ws') + `/ws?token=${encodeURIComponent(token)}&clientId=responsive-peer`)
-  await new Promise((resolve, reject) => {
-    extraPeer.addEventListener('open', resolve, { once: true })
-    extraPeer.addEventListener('error', reject, { once: true })
-  })
+  extraPeer = await openPeer(email)
 
   // 先在桌面档造点内容：两篇笔记，第二篇带几个标题给大纲用。
   // 标题直接敲在标题框里（新建后它自动聚焦），别让正文的 # 标题被结算成笔记标题——
@@ -217,8 +273,11 @@ async function run() {
     await checkSyncControls(`${label} ${size.tier ?? 'desktop'} 初始页`)
     await dev.evaluate(() => { document.documentElement.dataset.theme = 'dark'; return 1 })
     await checkSyncControls(`${label} ${size.tier ?? 'desktop'} 深色`)
+    await checkDevicesDialog(`${label}-dark`)
     await shot(`${label}-sync-dark`)
     await dev.evaluate(() => { document.documentElement.dataset.theme = 'light'; return 1 })
+    if (size.w === 320 || !size.tier) await checkDevicesDialog(`${label}-light`)
+    if (size.w === 320) await checkScrollableDevices(email, label)
 
     if (size.tier === 'phone') {
       const rect = (sel) => dev.evaluate((s) => {
@@ -244,6 +303,7 @@ async function run() {
       const hash = await dev.evaluate(() => location.hash)
       check(`${label} 点卡片进编辑页`, hash === '#/note' && (await count('.m-note')) === 1, `hash=${hash}`)
       await checkSyncControls(`${label} phone 编辑页`)
+      if (size.w === 320) await checkDevicesDialog(`${label}-editor`)
       const bar = await rect('.editor-bar')
       check(`${label} 工具栏贴底`, bar && Math.abs(bar.bottom - size.h) < 1.5, JSON.stringify(bar))
       const title = await rect('.note-title')

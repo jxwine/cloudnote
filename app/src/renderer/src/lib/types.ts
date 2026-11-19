@@ -7,6 +7,13 @@ export interface User {
   isAdmin: boolean
 }
 
+export interface OnlineDevice {
+  id: string
+  name: string
+  connectedAt: number
+  current: boolean
+}
+
 export interface ReadingLock {
   salt: string
   hash: string

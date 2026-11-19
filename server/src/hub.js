@@ -1,17 +1,37 @@
 /**
  * WebSocket 连接中心：按 userId 分组，向同账号的其他设备广播变更。
- * 每个连接注册自己的 clientId；广播时可排除变更发起方，避免回声。
+ * 广播按 clientId 排除同步回声，在线端管理按已认证的登录会话分组。
  */
-const rooms = new Map() // userId -> Set<{ socket, clientId }>
+const rooms = new Map() // userId -> Set<连接>
 
-export function join(userId, clientId, socket) {
+const platforms = [
+  [/iPad/, 'iPad'], [/iPhone|iPod/, 'iPhone'], [/Android/, 'Android'],
+  [/Windows/, 'Windows'], [/Macintosh|Mac OS/, 'macOS'], [/CrOS/, 'ChromeOS'], [/Linux/, 'Linux'],
+]
+
+function describeDevice(ua) {
+  const platform = platforms.find(([pattern]) => pattern.test(ua))?.[1]
+  let app = '网页端'
+  if (/Electron\//.test(ua)) app = '桌面端'
+  else if (platform === 'Android' && /; wv\)/.test(ua)) app = '客户端'
+  else if (/Edg(?:A|iOS)?\//.test(ua)) app = 'Edge'
+  else if (/OPR\//.test(ua)) app = 'Opera'
+  else if (/SamsungBrowser\//.test(ua)) app = '三星浏览器'
+  else if (/Firefox\/|FxiOS\//.test(ua)) app = 'Firefox'
+  else if (/Chrome\/|CriOS\//.test(ua)) app = 'Chrome'
+  else if (/Safari\//.test(ua)) app = 'Safari'
+  return [platform, app].filter(Boolean).join(' ')
+}
+
+export function join(userId, clientId, session, userAgent, socket) {
   let room = rooms.get(userId)
   if (!room) rooms.set(userId, (room = new Set()))
-  const member = { socket, clientId }
+  const member = { socket, clientId, session, name: describeDevice(userAgent), connectedAt: Date.now() }
   room.add(member)
   return () => {
-    room.delete(member)
+    if (!room.delete(member) || rooms.get(userId) !== room) return false
     if (room.size === 0) rooms.delete(userId)
+    return true
   }
 }
 
@@ -34,13 +54,47 @@ export function broadcast(userId, payload, originClientId) {
   return sent
 }
 
-/** 当前在线的设备数（用于「其他端正在浏览」的提示） */
-export function peerCount(userId, selfClientId) {
+function onlineSessions(userId) {
+  const sessions = new Map()
+  for (const member of rooms.get(userId) ?? []) {
+    if (member.socket.readyState === 1 && !sessions.has(member.session.id)) {
+      sessions.set(member.session.id, member)
+    }
+  }
+  return sessions
+}
+
+/** 同一登录打开多个窗口仍算一端。 */
+export function peerCount(userId, selfSessionId) {
+  const sessions = onlineSessions(userId)
+  if (selfSessionId) sessions.delete(selfSessionId)
+  return sessions.size
+}
+
+export function announcePresence(userId) {
+  broadcast(userId, { type: 'presence', peers: peerCount(userId) })
+}
+
+export function onlineDevices(userId, selfSessionId) {
+  return [...onlineSessions(userId).values()].map(({ session, name, connectedAt }) => ({
+    id: session.id, name, connectedAt, current: session.id === selfSessionId,
+  })).sort((a, b) => Number(b.current) - Number(a.current) || b.connectedAt - a.connectedAt)
+}
+
+export function findOnlineSession(userId, id) {
+  return onlineSessions(userId).get(id)?.session
+}
+
+export function kickSession(userId, id, code) {
   const room = rooms.get(userId)
-  if (!room) return 0
-  let n = 0
-  for (const m of room) if (m.clientId !== selfClientId) n++
-  return n
+  if (!room) return
+  for (const member of room) {
+    if (member.session.id !== id) continue
+    room.delete(member)
+    member.socket.close(code, 'session revoked')
+  }
+  if (!room.size) rooms.delete(userId)
+  announcePresence(userId)
 }
 
 /** 某账号当前在线的连接数（后台用，不排除任何人） */

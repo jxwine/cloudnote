@@ -59,8 +59,8 @@ test('目录与笔记阅读密码：权限、同步、并发与恢复', async (t
   const owner = await register('owner')
   const outsider = await register('outsider')
   const events = [], echoes = []
-  const leave = joinHub(owner.user.id, 'peer', { readyState: 1, send: (raw) => events.push(JSON.parse(raw)) })
-  const leaveOrigin = joinHub(owner.user.id, 'origin', { readyState: 1, send: (raw) => echoes.push(JSON.parse(raw)) })
+  const leave = joinHub(owner.user.id, 'peer', { id: 'peer-session' }, '', { readyState: 1, send: (raw) => events.push(JSON.parse(raw)) })
+  const leaveOrigin = joinHub(owner.user.id, 'origin', { id: 'origin-session' }, '', { readyState: 1, send: (raw) => echoes.push(JSON.parse(raw)) })
   t.after(() => { leave(); leaveOrigin() })
   const folder = (await request('POST', '/api/folders', owner.token, { name: '私密目录' })).data
   const note = (await request('POST', '/api/notes', owner.token,

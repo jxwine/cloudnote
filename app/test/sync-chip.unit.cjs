@@ -20,6 +20,7 @@ function harness(initial = {}) {
   const jsx = (type, props) => ({ type, props: props ?? {} })
   const IconRefresh = () => jsx('svg', {})
   const imports = {
+    react: { useRef: () => ({ current: null }), useState: (value) => [value, () => {}] },
     'react/jsx-runtime': { jsx, jsxs: jsx },
     '@/lib/store': { useStore: select => select(state) },
     '@/lib/sync': { syncManually: () => {
@@ -31,6 +32,7 @@ function harness(initial = {}) {
       } })
     } },
     './Icons': { IconRefresh },
+    './DevicesDialog': { DevicesDialog: () => null },
   }
   const context = vm.createContext({ console })
   function newView() {
@@ -60,6 +62,7 @@ function controls(tree) {
   const nodes = descendants(tree)
   return {
     status: nodes.find(node => hasClass(node, 'sync-chip')),
+    devices: nodes.find(node => hasClass(node, 'peer-trigger')),
     button: nodes.find(node => hasClass(node, 'sync-manual')),
     dot: nodes.find(node => hasClass(node, 'sync-dot')),
     buttons: nodes.filter(node => typeof node === 'object' && node.type === 'button'),
@@ -70,15 +73,18 @@ const text = node => descendants(node).filter(value => typeof value === 'string'
 const tests = []
 const test = (name, fn) => tests.push({ name, fn })
 
-test('状态是可读信息，旁边只有一个无文字的图标操作入口', () => {
+test('同步状态、在线端入口与手动同步按钮各自独立', () => {
   const h = harness({ peers: 2 })
   const ui = controls(h.render())
   assert.equal(ui.status.type, 'span')
   assert.equal(ui.status.props.role, 'status')
   assert.equal(typeof ui.status.props.onClick, 'undefined')
   assert.match(text(ui.status), /已同步/)
-  assert.match(text(ui.status), /3 端/)
-  assert.equal(ui.buttons.length, 1)
+  assert.equal(text(ui.devices), '3 端')
+  assert.equal(ui.devices.type, 'button')
+  assert.equal(ui.devices.props['aria-haspopup'], 'dialog')
+  assert.equal(typeof ui.devices.props.onClick, 'function')
+  assert.equal(ui.buttons.length, 2)
   assert.equal(ui.button.type, 'button')
   assert.equal(ui.button.props['aria-label'], '手动同步')
   assert.equal(ui.button.props.disabled, false)
@@ -142,13 +148,14 @@ test('已同步但仍有本地草稿时显示待同步，失败与离线不被�
 
 test('登录失效优先显示并阻止手动操作', () => {
   for (const manualSyncing of [false, true]) {
-    const h = harness({ status: 'syncing', dirtyNoteId: 'note-1', manualSyncing, authExpired: '会话已过期' })
+    const h = harness({ status: 'syncing', peers: 2, dirtyNoteId: 'note-1', manualSyncing, authExpired: '会话已过期' })
     const ui = controls(h.render())
     assert.match(text(ui.status), /登录失效/)
     assert.ok(hasClass(ui.dot, 'error'))
     assert.equal(ui.button.props.disabled, true)
     assert.match(ui.button.props.title, /登录/)
     assert.equal(ui.button.props['aria-busy'], manualSyncing)
+    assert.equal(ui.devices, undefined)
   }
 })
 

@@ -1,4 +1,4 @@
-import type { AdminStats, AdminUser, Folder, Note, Release, Revision, User, LockTarget } from './types'
+import type { AdminStats, AdminUser, Folder, Note, OnlineDevice, Release, Revision, User, LockTarget } from './types'
 import { getActiveAccountScope, initializeAccountScope, invalidateAccountEpoch } from './accountStorage'
 
 const LS = {
@@ -136,6 +136,10 @@ export const api = {
     request<{ token: string; user: User }>('POST', '/api/auth/login', { email, password }),
 
   me: () => request<{ user: User; peers: number }>('GET', '/api/me'),
+
+  listDevices: () => request<{ devices: OnlineDevice[] }>('GET', '/api/devices'),
+
+  kickDevice: (id: string) => request<{ ok: true }>('DELETE', `/api/devices/${encodeURIComponent(id)}`),
 
   pull: (since: number) =>
     request<{ seq: number; folders: Folder[]; notes: Note[] }>('GET', `/api/sync/pull?since=${since}`),

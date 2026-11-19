@@ -28,9 +28,10 @@ function openWs(token, clientId) {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(`${BASE.replace('http', 'ws')}/ws?token=${token}&clientId=${clientId}`)
     const inbox = []
+    const closed = new Promise((done) => ws.addEventListener('close', done, { once: true }))
     ws.onmessage = (e) => inbox.push(JSON.parse(e.data))
     ws.onerror = reject
-    ws.onopen = () => resolve({ ws, inbox, clientId })
+    ws.onopen = () => resolve({ ws, inbox, clientId, closed })
   })
 }
 
@@ -56,7 +57,9 @@ const token = reg.data.token
 
 ok((await api('POST', '/api/auth/register', { body: { email, password: 'pass1234' } })).status === 409, '重复邮箱注册被拒绝')
 ok((await api('POST', '/api/auth/login', { body: { email, password: 'wrong' } })).status === 401, '错误密码登录被拒绝')
-ok((await api('POST', '/api/auth/login', { body: { email, password: 'pass1234' } })).status === 200, '正确密码登录通过')
+const dev2Login = await api('POST', '/api/auth/login', { body: { email, password: 'pass1234' } })
+ok(dev2Login.status === 200, '正确密码登录通过')
+const dev2Token = dev2Login.data.token
 ok((await api('GET', '/api/sync/pull')).status === 401, '无 token 访问私有接口被拒绝')
 
 // 错误处理器如果注册晚于路由，子作用域就用不上它，客户端会收到 Fastify 的
@@ -68,7 +71,7 @@ ok(dupReg.data?.error === '该邮箱已注册', '409 也带自定义文案', dup
 
 /* ---------- 2. 双设备 WS ---------- */
 const dev1 = await openWs(token, 'dev1')
-const dev2 = await openWs(token, 'dev2')
+const dev2 = await openWs(dev2Token, 'dev2')
 ok(await expectMsg(dev1.inbox, (m) => m.type === 'ready'), 'dev1 建立实时连接')
 ok(await expectMsg(dev2.inbox, (m) => m.type === 'ready'), 'dev2 建立实时连接')
 
@@ -100,14 +103,14 @@ ok(pushed?.note.content.includes('更新后的正文'), 'dev2 实时收到最新
 
 /* ---------- 6. 版本冲突 ---------- */
 const stale = await api('PATCH', `/api/notes/${note.id}`, {
-  token, clientId: 'dev2',
+  token: dev2Token, clientId: 'dev2',
   body: { baseVersion: 1, content: '<p>dev2 基于旧版本的改动</p>' },
 })
 ok(stale.status === 409 && stale.data.conflict === true, '基于过期版本保存返回 409 冲突')
 ok(stale.data.note.version === 2 && stale.data.note.content.includes('更新后的正文'), '409 响应携带服务端最新版本，供客户端生成冲突副本')
 
 const copy = (await api('POST', '/api/notes', {
-  token, clientId: 'dev2',
+  token: dev2Token, clientId: 'dev2',
   body: { title: '会议纪要（冲突副本）', content: '<p>dev2 基于旧版本的改动</p>', conflictOf: note.id },
 })).data
 ok(copy?.conflictOf === note.id, '冲突副本创建成功并回指原笔记')
@@ -372,7 +375,28 @@ if (!adminMe?.user?.isAdmin) {
   ok(bad.status === 400, '不认识的客户端类型被拒绝')
 }
 
-dev1.ws.close(); dev2.ws.close()
+/* ---------- 在线端管理 ---------- */
+const secondWindow = await openWs(dev2Token, 'dev2-window')
+await expectMsg(secondWindow.inbox, (m) => m.type === 'ready')
+const { devices } = (await api('GET', '/api/devices', { token })).data
+ok(devices?.length === 2 && devices[0].current && !devices[1].current &&
+  devices.every((device) => device.name && device.connectedAt > 0), '在线端按登录去重，当前端排在第一位')
+const selfPath = '/api/devices/' + devices[0].id
+const otherPath = '/api/devices/' + devices[1].id
+ok((await api('DELETE', selfPath, { token })).status === 400, '服务端拒绝踢出当前端')
+ok((await api('DELETE', otherPath, { token: other.token })).status === 404, '不同账号不能踢出该端')
+ok((await api('GET', '/api/devices', { token: other.token })).data.devices.length === 0, '在线端列表按账号隔离')
+ok((await api('DELETE', otherPath, { token })).status === 200, '踢出同账号其他在线端')
+const closeCode = (device) => Promise.race([device.closed.then(({ code }) => code), wait(1500)])
+ok((await closeCode(dev2)) === 4004 && (await closeCode(secondWindow)) === 4004, '被踢端的两个窗口都收到退出信号')
+ok((await api('GET', '/api/me', { token: dev2Token })).status === 401, '旧登录凭证无法调用 HTTP 接口')
+const revoked = await openWs(dev2Token, 'dev2')
+ok((await closeCode(revoked)) === 4004 && !revoked.inbox.some((m) => m.type === 'ready'), '旧凭证无法重新建立同步连接')
+ok(dev1.ws.readyState === WebSocket.OPEN && (await api('GET', '/api/me', { token })).data.peers === 0, '当前端仍在线且端数已更新')
+const relogin = await api('POST', '/api/auth/login', { body: { email, password: 'newpass123' } })
+ok(relogin.status === 200 && (await api('GET', '/api/me', { token: relogin.data.token })).status === 200, '旧会话被踢后仍可重新登录')
+
+dev1.ws.close(); dev2.ws.close(); secondWindow.ws.close(); revoked.ws.close()
 console.log('─'.repeat(46))
 console.log(`  通过 ${pass}  失败 ${fail}\n`)
 process.exit(fail ? 1 : 0)

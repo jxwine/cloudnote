@@ -1004,6 +1004,17 @@ textarea {
   }
 }
 
+.peer-trigger {
+  display: inline-grid;
+  place-items: center;
+  height: 28px;
+  padding: 0 2px;
+  border-radius: 9px;
+  touch-action: manipulation;
+}
+
+.peer-trigger:hover { background: var(--hover); }
+
 .peer-badge {
   display: inline-flex;
   align-items: center;
@@ -1554,7 +1565,6 @@ html[data-touch] .web-update-actions button { min-height: 44px; }
   border-radius: 50%;
   border: 2px solid #fff;
   box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
-  pointer-events: none;
 }
 
 .spectrum-sliders {
@@ -1773,6 +1783,57 @@ body.is-reflowing .bubble-bar {
 
 .dialog-spacer {
   flex: 1;
+}
+
+.devices-dialog {
+  position: fixed;
+  inset: 0;
+  width: calc(100% - 32px);
+  max-height: calc(100% - var(--titlebar-h) - 24px);
+  margin: auto;
+  color: var(--text);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.devices-dialog::backdrop {
+  background: linear-gradient(transparent var(--titlebar-h), rgba(18, 20, 24, 0.28) var(--titlebar-h));
+}
+
+.devices-dialog[open] { display: flex; flex-direction: column; }
+.devices-dialog > :not(.devices-list) { flex-shrink: 0; }
+
+.devices-header, .device-row, .devices-notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.devices-header .dialog-title { margin: 0; font-size: 16px; }
+.devices-header .icon-btn { width: 40px; height: 40px; }
+.devices-list {
+  min-height: 0;
+  margin: 4px -4px 0;
+  padding: 0 4px;
+  list-style: none;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.device-row { min-height: 58px; padding: 6px 0; border-top: 1px solid var(--line-soft); }
+.device-info { min-width: 0; }
+.device-info strong { display: block; font-weight: 600; overflow-wrap: anywhere; }
+.device-info time { display: block; margin-top: 3px; font-size: 12px; color: var(--text-2); }
+.device-row button, .device-current { flex-shrink: 0; }
+.devices-dialog .btn-ghost { min-height: 44px; }
+.device-current { padding: 4px 8px; border-radius: 5px; color: var(--accent); background: var(--accent-soft); font-size: 12px; }
+.devices-notice { margin: 8px 0 0; color: var(--text-2); line-height: 1.5; }
+.devices-confirm { margin-top: 6px; padding-top: 12px; border-top: 1px solid var(--line); }
+.devices-confirm p { margin: 0; line-height: 1.5; }
+.devices-confirm .dialog-actions { justify-content: flex-end; margin-top: 8px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .devices-dialog { animation: none; }
 }
 
 .export-dialog { max-height: 100%; overflow-y: auto; }
@@ -3996,6 +4057,9 @@ html[data-viewport] * {
   -webkit-tap-highlight-color: transparent;
 }
 
+html[data-touch][data-viewport='tablet'] .peer-trigger { min-width: 44px; height: 38px; }
+html[data-touch] .devices-header .icon-btn { width: 44px; height: 44px; }
+
 /* ---------- 手机：通用 ---------- */
 html[data-viewport='phone'] {
   /* 刘海屏：顶栏往下让出状态栏。overlay 的 top 也读这个变量 */
@@ -4175,6 +4239,12 @@ html[data-viewport='phone'] .menu {
   width: 44px;
   height: 44px;
   border-radius: 12px;
+}
+
+.m-top .peer-trigger,
+html[data-viewport='phone'] .devices-header .icon-btn {
+  min-width: 44px;
+  height: 44px;
 }
 
 .m-top .sync-manual svg {

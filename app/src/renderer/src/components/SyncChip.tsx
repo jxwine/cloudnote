@@ -1,6 +1,8 @@
+import { useRef, useState } from 'react'
 import { useStore } from '@/lib/store'
 import * as sync from '@/lib/sync'
 import { IconRefresh } from './Icons'
+import { DevicesDialog } from './DevicesDialog'
 
 const LABEL: Record<string, string> = {
   synced: '已同步',
@@ -27,6 +29,9 @@ export function SyncChip() {
   const authExpired = useStore((s) => s.authExpired)
   const manualSyncing = useStore((s) => s.manualSyncing)
   const dirty = useStore((s) => s.dirtyNoteId !== null)
+  const [devicesOpen, setDevicesOpen] = useState(false)
+  const peerButton = useRef<HTMLButtonElement>(null)
+  const syncButton = useRef<HTMLButtonElement>(null)
   const displayStatus = authExpired ? 'error' : status === 'synced' && dirty ? 'pending' : status
   const label = authExpired ? '登录失效' : LABEL[displayStatus] ?? displayStatus
 
@@ -41,9 +46,16 @@ export function SyncChip() {
       >
         <span className={`sync-dot ${displayStatus === 'connecting' ? 'syncing' : displayStatus}`} />
         <span>{label}</span>
-        {peers > 0 && <span className="peer-badge">{peers + 1} 端</span>}
       </span>
+      {peers > 0 && !authExpired && (
+        <button ref={peerButton} className="peer-trigger" type="button" aria-haspopup="dialog"
+          aria-label={`管理在线设备，${peers + 1} 端在线`} title="管理在线设备"
+          onClick={() => setDevicesOpen(true)}>
+          <span className="peer-badge">{peers + 1} 端</span>
+        </button>
+      )}
       <button
+        ref={syncButton}
         className="icon-btn sync-manual"
         type="button"
         disabled={manualSyncing || !!authExpired}
@@ -55,6 +67,12 @@ export function SyncChip() {
       >
         <IconRefresh />
       </button>
+      {devicesOpen && !authExpired && (
+        <DevicesDialog onDismiss={() => {
+          setDevicesOpen(false)
+          requestAnimationFrame(() => (peerButton.current ?? syncButton.current)?.focus())
+        }} />
+      )}
     </div>
   )
 }

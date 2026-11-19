@@ -1,9 +1,9 @@
 import { db, tx, nextSeq, newId } from './db.js'
 import {
   register, login, sign, authGuard, adminGuard, httpError,
-  changePassword, resetPassword, toUser, verifyAccountPassword,
+  changePassword, resetPassword, toUser, verifyAccountPassword, revokeSession, SESSION_REVOKED_CODE,
 } from './auth.js'
-import { broadcast, peerCount, kick, onlineCount, onlineStats } from './hub.js'
+import { broadcast, peerCount, onlineDevices, findOnlineSession, kickSession, kick, onlineCount, onlineStats } from './hub.js'
 import { saveDataUrl, readUpload, uploadsRoot } from './uploads.js'
 import { saveStream, readRelease, removeRelease } from './releases.js'
 import { buildWebClipProfile } from './webclip.js'
@@ -270,8 +270,23 @@ export default async function routes(app) {
 
     priv.get('/api/me', async (req) => ({
       user: toUser(req.user),
-      peers: peerCount(req.user.id, req.clientId),
+      peers: peerCount(req.user.id, req.session.id),
     }))
+
+    priv.get('/api/devices', async (req, reply) => {
+      reply.header('cache-control', 'no-store')
+      return { devices: onlineDevices(req.user.id, req.session.id) }
+    })
+
+    priv.delete('/api/devices/:id', async (req) => {
+      const { id } = req.params
+      if (id === req.session.id) throw httpError(400, '不能踢出当前端')
+      const target = findOnlineSession(req.user.id, id)
+      if (!target) throw httpError(404, '该端已离线或不存在')
+      revokeSession(req.user.id, target)
+      kickSession(req.user.id, id, SESSION_REVOKED_CODE)
+      return { ok: true }
+    })
 
     /* ============ 增量拉取：since=0 即全量 ============ */
     priv.get('/api/sync/pull', async (req) => {

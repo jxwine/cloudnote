@@ -1,9 +1,12 @@
 import bcrypt from 'bcryptjs'
 import jwt from 'jsonwebtoken'
+import { createHash, randomUUID } from 'node:crypto'
 import { db, newId } from './db.js'
 
 const SECRET = process.env.CLOUDNOTE_SECRET || 'cloudnote-dev-secret-change-me'
 const TTL = '30d'
+export const SESSION_REVOKED_CODE = 4004
+const SESSION_REVOKED_REASON = '此设备已被踢出，请重新登录'
 
 /**
  * 管理员名单来自 .env 的 CLOUDNOTE_ADMINS（逗号分隔的邮箱）。
@@ -31,16 +34,16 @@ export const toUser = (row) => ({
 })
 
 export const sign = (user) =>
-  jwt.sign({ uid: user.id, email: user.email }, SECRET, { expiresIn: TTL })
+  jwt.sign({ uid: user.id, email: user.email }, SECRET, { expiresIn: TTL, jwtid: randomUUID() })
 
 /**
  * token 是不是在管理员重置密码之前签的。jwt 的 iat 只精确到秒，比较也按秒来：
  * 重置后同一秒内重新登录拿到的新 token 必须算有效，否则用户改完密码马上登录会被误拒。
  */
-export const tokenPredatesReset = (payload, user) =>
+const tokenPredatesReset = (payload, user) =>
   !!user?.password_reset_at && (payload?.iat || 0) < Math.floor(user.password_reset_at / 1000)
 
-export function verify(token) {
+function verify(token) {
   try {
     return jwt.verify(token, SECRET)
   } catch {
@@ -75,7 +78,28 @@ export function login(email, password) {
   return { id: row.id, email: row.email, display_name: row.display_name, seq: row.seq, disabled: 0 }
 }
 
-export const getUser = (id) => findById.get(id)
+const findRevokedSession = db.prepare('SELECT 1 FROM revoked_sessions WHERE user_id = ? AND id = ?')
+const insertRevokedSession = db.prepare('INSERT OR IGNORE INTO revoked_sessions (user_id, id, expires_at) VALUES (?, ?, ?)')
+const deleteExpiredSessions = db.prepare('DELETE FROM revoked_sessions WHERE expires_at <= ?')
+deleteExpiredSessions.run(Math.floor(Date.now() / 1000))
+
+export function revokeSession(userId, { id, expiresAt }) {
+  deleteExpiredSessions.run(Math.floor(Date.now() / 1000))
+  insertRevokedSession.run(userId, id, expiresAt)
+}
+
+/** HTTP 和实时连接共用凭证校验。旧凭证用已签名的内容派生会话 ID。 */
+export function authenticate(token) {
+  const payload = typeof token === 'string' && verify(token)
+  const user = payload && typeof payload.uid === 'string' && findById.get(payload.uid)
+  if (!user || !Number.isInteger(payload.exp)) return { error: '登录已失效，请重新登录' }
+  if (user.disabled) return { error: '账号已被停用，请联系管理员' }
+  if (tokenPredatesReset(payload, user)) return { error: '密码已被重置，请用新密码重新登录' }
+
+  const id = payload.jti || 'legacy-' + createHash('sha256').update(token.slice(0, token.lastIndexOf('.'))).digest('hex')
+  if (findRevokedSession.get(user.id, id)) return { error: SESSION_REVOKED_REASON, revoked: true }
+  return { user, session: { id, expiresAt: payload.exp } }
+}
 
 const findRawById = db.prepare('SELECT * FROM users WHERE id = ?')
 const updatePassword = db.prepare('UPDATE users SET password_hash = ? WHERE id = ?')
@@ -120,17 +144,12 @@ export function httpError(status, message) {
 const ACTIVE_THROTTLE = 5 * 60 * 1000
 const touchActive = db.prepare('UPDATE users SET last_active_at = ? WHERE id = ?')
 
-/** Fastify preHandler：解析 Bearer token，挂载 req.user / req.clientId */
+/** Fastify preHandler：解析 Bearer token，挂载账号、登录会话和同步来源。 */
 export function authGuard(req, reply, done) {
   const raw = req.headers.authorization || ''
-  const payload = raw.startsWith('Bearer ') ? verify(raw.slice(7)) : null
-  const user = payload && getUser(payload.uid)
-  if (!user) return reply.code(401).send({ error: '登录已失效，请重新登录' })
-  // 停用的账号连同已发出去的 token 一起失效。客户端见到 401 会自动退到登录页。
-  if (user.disabled) return reply.code(401).send({ error: '账号已被停用，请联系管理员' })
-  // 管理员重置过密码：重置之前签的 token 作废
-  if (tokenPredatesReset(payload, user))
-    return reply.code(401).send({ error: '密码已被重置，请用新密码重新登录' })
+  const auth = authenticate(raw.startsWith('Bearer ') ? raw.slice(7) : null)
+  if (auth.error) return reply.code(401).send({ error: auth.error })
+  const { user, session } = auth
 
   const now = Date.now()
   if (!user.last_active_at || now - user.last_active_at > ACTIVE_THROTTLE) {
@@ -139,6 +158,7 @@ export function authGuard(req, reply, done) {
   }
 
   req.user = user
+  req.session = session
   req.clientId = req.headers['x-client-id'] || null
   done()
 }

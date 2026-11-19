@@ -5,8 +5,8 @@ import Fastify from 'fastify'
 import cors from '@fastify/cors'
 import websocket from '@fastify/websocket'
 import routes from './routes.js'
-import { verify, getUser, tokenPredatesReset } from './auth.js'
-import { join, broadcast, peerCount } from './hub.js'
+import { authenticate, SESSION_REVOKED_CODE } from './auth.js'
+import { join, announcePresence, peerCount } from './hub.js'
 
 const PORT = Number(process.env.PORT || 4471)
 const HOST = process.env.HOST || '0.0.0.0'
@@ -59,26 +59,24 @@ app.get('/health', async () => ({ ok: true, ts: Date.now() }))
 app.get('/ws', { websocket: true }, (socket, req) => {
   const token = req.query?.token
   const clientId = req.query?.clientId || 'anon'
-  const payload = token ? verify(token) : null
-  const user = payload && getUser(payload.uid)
+  const auth = authenticate(token)
 
-  // 和 authGuard 同一套规则：停用的、或者管理员重置密码之前签出的 token，都不让连
-  const stale = user && tokenPredatesReset(payload, user)
-  if (!user || user.disabled || stale) {
-    socket.send(JSON.stringify({ type: 'error', message: user ? (stale ? '密码已被重置' : '账号已被停用') : '未授权' }))
-    socket.close(4001, 'unauthorized')
+  if (auth.error) {
+    socket.send(JSON.stringify({ type: 'error', message: auth.error }))
+    socket.close(auth.revoked ? SESSION_REVOKED_CODE : 4001, 'unauthorized')
     return
   }
 
-  const leave = join(user.id, clientId, socket)
-  socket.send(JSON.stringify({ type: 'ready', seq: user.seq, peers: peerCount(user.id, clientId) }))
-  // 告知其他设备：有新端上线（用于「其他端正在浏览」提示）
-  broadcast(user.id, { type: 'presence', peers: peerCount(user.id, null) }, null)
+  const { user, session } = auth
+  const leave = join(user.id, clientId, session, req.headers['user-agent'] || '', socket)
+  socket.send(JSON.stringify({ type: 'ready', seq: user.seq, peers: peerCount(user.id, session.id) }))
+  announcePresence(user.id)
 
   let alive = true
   socket.on('pong', () => { alive = true })
   const ping = setInterval(() => {
     if (!alive) return socket.terminate()
+    if (Date.now() >= session.expiresAt * 1000) return socket.close(4001, 'session expired')
     alive = false
     try { socket.ping() } catch { /* 连接已断 */ }
   }, 30_000)
@@ -93,8 +91,7 @@ app.get('/ws', { websocket: true }, (socket, req) => {
 
   socket.on('close', () => {
     clearInterval(ping)
-    leave()
-    broadcast(user.id, { type: 'presence', peers: peerCount(user.id, null) }, null)
+    if (leave()) announcePresence(user.id)
   })
 })
 

@@ -135,6 +135,7 @@ interface State extends CacheShape, UiShape {
   status: SyncStatus
   manualSyncing: boolean
   peers: number
+  presenceVersion: number
   /** 当前笔记是否有尚未落库的改动——决定收到远端更新时是热更新还是生成冲突副本 */
   dirtyNoteId: string | null
   notices: ConflictNotice[]
@@ -262,6 +263,7 @@ export const useStore = create<State>((set, get) => {
     status: 'offline',
     manualSyncing: false,
     peers: 0,
+    presenceVersion: 0,
     dirtyNoteId: null,
     notices: [],
     search: '',
@@ -326,7 +328,7 @@ export const useStore = create<State>((set, get) => {
       set({ user })
     },
     setStatus: (status, peers) =>
-      set((s) => ({ status, peers: peers === undefined ? s.peers : peers })),
+      set((s) => peers === undefined ? { status } : { status, peers, presenceVersion: s.presenceVersion + 1 }),
     setDirty: (dirtyNoteId) => set({ dirtyNoteId }),
     setManualSyncing: (manualSyncing) => set({ manualSyncing }),
 
