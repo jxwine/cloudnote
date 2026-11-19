@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { Editor } from '@tiptap/react'
-import { FONT_OPTIONS, TYPOGRAPHY, resolveTheme, useStore, useBindings, currentBindings } from '@/lib/store'
+import { FONT_OPTIONS, LEFT_PANEL_WIDTH, TYPOGRAPHY, resolveTheme, useStore, useBindings, currentBindings } from '@/lib/store'
 import { comboFromEvent, findShortcut, formatCombo } from '@/lib/shortcuts'
 import * as sync from '@/lib/sync'
 import { LoginView } from './components/LoginView'
@@ -25,7 +25,7 @@ import { useUpdateCheck } from '@/lib/useUpdateCheck'
 import { DownloadLinks, IOS_ROUTE } from './components/DownloadLinks'
 import { IosInstallPage } from './components/IosInstallPage'
 import {
-  IconCloud, IconPanelLeft, IconPanelRight, IconJump, IconTrash,
+  IconCloud, IconPanelLeft, IconPanelRight, IconJump,
   IconServer, IconSettings,
 } from './components/Icons'
 
@@ -171,9 +171,6 @@ function Workspace() {
   const activeFolderId = useStore((s) => s.activeFolderId)
   const noteLocked = useStore((s) => !!s.activeNoteId && !!blockedLock(s, { kind: 'note', id: s.activeNoteId }))
   const user = useStore((s) => s.user)
-  const sidebarView = useStore((s) => s.sidebarView)
-  const setSidebarView = useStore((s) => s.setSidebarView)
-  const trashCount = useStore((s) => Object.values(s.notes).filter((n) => n.deleted).length)
   const viewport = useStore((s) => s.viewport)
   const drawer = useStore((s) => s.drawer)
   const setDrawer = useStore((s) => s.setDrawer)
@@ -185,6 +182,10 @@ function Workspace() {
   const rightAsDrawer = viewport === 'tablet'
   const leftShown = leftOpen
   const rightShown = rightAsDrawer ? drawer === 'right' : rightOpen
+  // 双栏同时展开时给编辑区留出空间。窗口宽度变动不覆盖用户保存的栏宽。
+  const leftMaxWidth = rightShown && !rightAsDrawer
+    ? `max(${LEFT_PANEL_WIDTH.min}px, calc(100% - ${rightWidth + 280}px))`
+    : undefined
 
   /** 开合某一侧的唯一入口：抽屉侧改 drawer，其余走原来的 setPanel（带持久化） */
   const toggleSide = useCallback((side: 'left' | 'right', open?: boolean) => {
@@ -243,52 +244,44 @@ function Workspace() {
           云笔记
         </span>
 
-        <button
-          className={'icon-btn' + (leftShown ? ' is-on' : '')}
-          title={`目录栏 (${formatCombo(bindings.toggleLeft)})`}
-          aria-pressed={leftShown}
-          onClick={() => toggleSide('left')}
-        >
-          <IconPanelLeft />
-        </button>
-        <button
-          className={'icon-btn' + (rightShown ? ' is-on' : '')}
-          title={`大纲栏 (${formatCombo(bindings.toggleRight)})`}
-          aria-pressed={rightShown}
-          onClick={() => toggleSide('right')}
-        >
-          <IconPanelRight />
-        </button>
-        <button
-          className={'icon-btn has-badge' + (sidebarView === 'trash' ? ' is-on' : '')}
-          title={trashCount ? `回收站（${trashCount} 篇）` : '回收站'}
-          aria-pressed={sidebarView === 'trash'}
-          onClick={() => {
-            // 再点一次退回笔记列表，当成一个开关用
-            setSidebarView(sidebarView === 'trash' ? 'tree' : 'trash')
-            if (!leftShown) toggleSide('left', true)
-          }}
-        >
-          <IconTrash />
-          {trashCount > 0 && <span className="badge">{trashCount > 99 ? '99+' : trashCount}</span>}
-        </button>
-        <button className="icon-btn" title={`快速跳转 (${formatCombo(bindings.quickJump)})`} onClick={() => setQuickJump(true)}>
-          <IconJump />
-        </button>
-        {/* 下面两个只在网页版出现：客户端里下载自己没意义，后台是运维用的，浏览器开就行 */}
-        {!isDesktop && <DownloadLinks variant="icons" />}
-        {!isDesktop && user?.isAdmin && (
-          <button className="icon-btn" title="后台管理" onClick={() => { location.hash = '#/admin' }}>
-            <IconServer />
+        <div className="titlebar-group titlebar-panels" role="group" aria-label="侧栏开关">
+          <button
+            className={'icon-btn' + (leftShown ? ' is-on' : '')}
+            title={`目录栏 (${formatCombo(bindings.toggleLeft)})`}
+            aria-pressed={leftShown}
+            onClick={() => toggleSide('left')}
+          >
+            <IconPanelLeft />
           </button>
-        )}
+          <button
+            className={'icon-btn' + (rightShown ? ' is-on' : '')}
+            title={`大纲栏 (${formatCombo(bindings.toggleRight)})`}
+            aria-pressed={rightShown}
+            onClick={() => toggleSide('right')}
+          >
+            <IconPanelRight />
+          </button>
+        </div>
 
         <span className="titlebar-spacer" />
 
-        <SyncChip />
-        <button className="icon-btn" title="设置" onClick={() => setSettings(true)}>
-          <IconSettings />
-        </button>
+        <div className="titlebar-group titlebar-tools" role="group" aria-label="工具">
+          <button className="icon-btn" title={`快速跳转 (${formatCombo(bindings.quickJump)})`} onClick={() => setQuickJump(true)}>
+            <IconJump />
+          </button>
+          {!isDesktop && <DownloadLinks variant="icons" />}
+          {!isDesktop && user?.isAdmin && (
+            <button className="icon-btn" title="后台管理" onClick={() => { location.hash = '#/admin' }}>
+              <IconServer />
+            </button>
+          )}
+        </div>
+        <div className="titlebar-group" role="group" aria-label="同步与设置">
+          <SyncChip />
+          <button className="icon-btn" title="设置" onClick={() => setSettings(true)}>
+            <IconSettings />
+          </button>
+        </div>
         {/* 给系统的窗口按钮留出位置。网页版没有那三个按钮，留了就是一块空白 */}
         {isDesktop && <span style={{ width: 138, flex: '0 0 auto' }} />}
       </header>
@@ -296,7 +289,7 @@ function Workspace() {
       <div className="workspace">
         <aside
           className={'panel panel-left' + (leftShown ? '' : ' is-collapsed')}
-          style={{ width: leftWidth }}
+          style={{ width: leftWidth, maxWidth: leftMaxWidth }}
         >
           <Sidebar />
         </aside>
@@ -356,34 +349,28 @@ function Resizer({ side }: { side: 'left' | 'right' }) {
   const setPanelWidth = useStore((s) => s.setPanelWidth)
   const [dragging, setDragging] = useState(false)
 
-  const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
-    e.preventDefault()
-    const el = e.currentTarget
-    el.setPointerCapture(e.pointerId)
-    setDragging(true)
+  useEffect(() => {
+    if (!dragging) return
     // 拖动期间把浮动格式条藏起来，免得跟着抖；松手后 BubbleToolbar 里的
     // ResizeObserver 会把它重新定位好
     document.body.classList.add('is-resizing')
-
-    const move = (ev: PointerEvent) => {
-      const width = side === 'left' ? ev.clientX : window.innerWidth - ev.clientX
-      setPanelWidth(side, width)
-    }
-    const up = () => {
-      setDragging(false)
-      document.body.classList.remove('is-resizing')
-      el.releasePointerCapture(e.pointerId)
-      el.removeEventListener('pointermove', move)
-      el.removeEventListener('pointerup', up)
-    }
-    el.addEventListener('pointermove', move)
-    el.addEventListener('pointerup', up)
-  }
+    return () => document.body.classList.remove('is-resizing')
+  }, [dragging])
 
   return (
     <div
       className={'resizer' + (dragging ? ' is-dragging' : '')}
-      onPointerDown={onPointerDown}
+      onPointerDown={(e) => {
+        if (e.button !== 0 || !e.isPrimary) return
+        e.preventDefault()
+        e.currentTarget.setPointerCapture(e.pointerId)
+        setDragging(true)
+      }}
+      onPointerMove={(e) => {
+        if (!e.currentTarget.hasPointerCapture(e.pointerId)) return
+        setPanelWidth(side, side === 'left' ? e.clientX : window.innerWidth - e.clientX)
+      }}
+      onLostPointerCapture={() => setDragging(false)}
       role="separator"
       aria-orientation="vertical"
       aria-label={side === 'left' ? '调整目录栏宽度' : '调整大纲栏宽度'}

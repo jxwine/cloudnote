@@ -47,6 +47,8 @@ export const TYPOGRAPHY = {
 const clamp = (v: number, r: { min: number; max: number; default: number }) =>
   Number.isFinite(v) ? Math.min(r.max, Math.max(r.min, v)) : r.default
 
+export const LEFT_PANEL_WIDTH = { min: 208, max: 420, default: 248 } as const
+
 interface UiShape {
   leftOpen: boolean
   rightOpen: boolean
@@ -90,7 +92,7 @@ const readUi = (): UiShape => {
     rightOpen: true,
     expanded: {},
     activeNoteId: null,
-    leftWidth: 248,
+    leftWidth: LEFT_PANEL_WIDTH.default,
     rightWidth: 232,
     themeMode: 'system',
     fontFamily: 'system',
@@ -103,6 +105,7 @@ const readUi = (): UiShape => {
     const raw = localStorage.getItem(UI_KEY)
     if (!raw) return fallback
     const ui = { ...fallback, ...(JSON.parse(raw) as Partial<UiShape>) }
+    ui.leftWidth = clamp(ui.leftWidth, LEFT_PANEL_WIDTH)
     ui.fontFamily = validFontFamily(ui.fontFamily)
     ui.fontSize = clamp(ui.fontSize, TYPOGRAPHY.fontSize)
     // 存的东西可能被手改过或者来自以后放宽了范围的版本，读回来时按现在的范围夹一下
@@ -420,7 +423,8 @@ export const useStore = create<State>((set, get) => {
     },
 
     setPanelWidth: (side, px) => {
-      const clamped = Math.min(420, Math.max(180, Math.round(px)))
+      const width = Math.round(px)
+      const clamped = side === 'left' ? clamp(width, LEFT_PANEL_WIDTH) : Math.min(420, Math.max(180, width))
       set(side === 'left' ? { leftWidth: clamped } : { rightWidth: clamped })
       persistUi()
     },

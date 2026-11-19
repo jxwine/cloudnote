@@ -42,6 +42,8 @@ export function Sidebar() {
     for (const n of Object.values(s.notes)) if (!n.deleted && canReadNote(s, n)) for (const t of n.tags ?? []) seen.add(t)
     return seen.size
   })
+  const trashCount = useStore((s) => Object.values(s.notes).filter((n) => n.deleted).length)
+  const trashLabel = trashCount ? `回收站（${trashCount} 篇）` : '回收站'
 
   // 拖拽负载同时存 ref 和 state：ref 供事件回调即时读取（dragstart 与 dragover
   // 之间 React 可能还没提交状态），state 只用来驱动高亮
@@ -251,51 +253,70 @@ export function Sidebar() {
 
   return (
     <>
-      <div className="panel-head">
+      <nav className="sidebar-tabs" aria-label="侧栏视图">
         <button
+          type="button"
           className={'panel-tab' + (sidebarView === 'tree' ? ' is-active' : '')}
+          aria-pressed={sidebarView === 'tree'}
           onClick={() => setSidebarView('tree')}
         >
+          <IconNote size={13} />
           笔记
         </button>
         <button
+          type="button"
           className={'panel-tab' + (sidebarView === 'tags' ? ' is-active' : '')}
+          aria-pressed={sidebarView === 'tags'}
+          aria-label={tagCount ? `标签（${tagCount} 个）` : '标签'}
           onClick={() => setSidebarView('tags')}
         >
+          <IconTag size={13} />
           标签
-          {tagCount > 0 && <span className="panel-tab-count">{tagCount}</span>}
+          {tagCount > 0 && <span className="panel-tab-count" aria-hidden="true">{tagCount > 99 ? '99+' : tagCount}</span>}
         </button>
-        <span className="panel-head-gap" />
-        {sidebarView === 'tree' && (
-          <>
-            <button className="icon-btn" title="全部导出" aria-label="全部导出" onClick={() => void exportAll()}>
-              <IconExport size={17} />
-            </button>
-            <button className="icon-btn" title="新建目录" onClick={() => void sync.createFolder('新建目录')}>
-              <IconFolderPlus size={18} />
-            </button>
-            <button className="icon-btn" title={`新建笔记 (${formatCombo(bindings.newNote)})`} onClick={() => void sync.createNote(null)}>
-              <IconPlus size={18} />
-            </button>
-          </>
-        )}
-      </div>
+        <button
+          type="button"
+          className={'panel-tab' + (sidebarView === 'trash' ? ' is-active' : '')}
+          title={trashLabel}
+          aria-label={trashLabel}
+          aria-pressed={sidebarView === 'trash'}
+          onClick={() => setSidebarView('trash')}
+        >
+          <IconTrash size={13} />
+          回收站
+          {trashCount > 0 && <span className="panel-tab-badge" aria-hidden="true">{trashCount > 99 ? '99+' : trashCount}</span>}
+        </button>
+      </nav>
 
       {sidebarView === 'tree' && (
-      <div className="search-box">
-        <IconSearch size={15} />
-        <input
-          value={search}
-          placeholder="搜索笔记"
-          onChange={(e) => setSearch(e.target.value)}
-          aria-label="搜索笔记"
-        />
-        {search && (
-          <button className="icon-btn search-clear" onClick={() => setSearch('')} title="清除">
-            <IconClose size={13} />
-          </button>
-        )}
-      </div>
+        <>
+          <div className="search-box">
+            <IconSearch size={15} />
+            <input
+              value={search}
+              placeholder="搜索笔记"
+              onChange={(e) => setSearch(e.target.value)}
+              aria-label="搜索笔记"
+            />
+            {search && (
+              <button className="icon-btn search-clear" type="button" onClick={() => setSearch('')} title="清除">
+                <IconClose size={13} />
+              </button>
+            )}
+          </div>
+          <div className="sidebar-create">
+            <button className="btn-primary sidebar-new-note" type="button" title={`新建笔记 (${formatCombo(bindings.newNote)})`} onClick={() => void sync.createNote(null)}>
+              <IconPlus size={16} />
+              新建笔记
+            </button>
+            <button className="icon-btn" type="button" title="新建目录" aria-label="新建目录" onClick={() => void sync.createFolder('新建目录')}>
+              <IconFolderPlus size={17} />
+            </button>
+            <button className="icon-btn" type="button" title="全部导出" aria-label="全部导出" onClick={() => void exportAll()}>
+              <IconExport size={16} />
+            </button>
+          </div>
+        </>
       )}
 
       <div

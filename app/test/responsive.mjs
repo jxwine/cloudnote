@@ -131,6 +131,57 @@ const click = (sel) =>
     return 'ok'
   }, sel)
 
+async function checkDesktopSidebar() {
+  const dragLeft = async (x) => {
+    const from = await dev.evaluate(() => {
+      const rect = document.querySelector('[aria-label="调整目录栏宽度"]').getBoundingClientRect()
+      return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 }
+    })
+    await dev.send('Input.dispatchMouseEvent', { type: 'mousePressed', ...from, button: 'left', buttons: 1, clickCount: 1 })
+    await dev.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y: from.y, button: 'left', buttons: 1 })
+    await dev.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y: from.y, button: 'left', buttons: 0, clickCount: 1 })
+  }
+  const waitWidth = (width) => until(async () => Math.abs((await measure(dev)).left.width - width) < 1, { what: `目录栏 ${width}px` })
+
+  await dragLeft(50)
+  await waitWidth(208)
+  const narrow = await dev.evaluate(() => {
+    const tabs = [...document.querySelectorAll('.sidebar-tabs .panel-tab')]
+    const contained = tabs.every((tab) => {
+      const button = tab.getBoundingClientRect()
+      const range = document.createRange()
+      range.selectNodeContents(tab)
+      return [...range.getClientRects()].every((item) => item.left >= button.left - 0.5 && item.right <= button.right + 0.5)
+    })
+    const top = (selector) => document.querySelector(selector).getBoundingClientRect().top
+    return tabs.length === 3 && contained && !!document.querySelector('.panel-tab-count') &&
+      top('.sidebar-tabs') < top('.search-box') &&
+      top('.search-box') < top('.sidebar-create') && top('.sidebar-create') < top('.panel-left .panel-body')
+  })
+  check('桌面：左栏拖至 208px，页签、搜索、新建两行仍能完整排开', narrow)
+  await shot('desktop-sidebar-min')
+
+  await click('.sidebar-tabs [aria-label^="标签"]')
+  check('桌面：从页签打开原标签页并隐藏笔记工具', await dev.evaluate(() =>
+    !document.querySelector('.sidebar-create') && document.querySelector('.taglist-item')?.textContent.includes('响应式标签')))
+  await click('.sidebar-tabs [title^="回收站"]')
+  check('桌面：回收站从左栏页签打开', await dev.evaluate(() =>
+    !!document.querySelector('.sidebar-tabs [title^="回收站"][aria-pressed="true"]') &&
+    !document.querySelector('.titlebar [title^="回收站"]') &&
+    !!document.querySelector('.panel-left .trash-actions')))
+  await click('.sidebar-tabs .panel-tab:first-child')
+
+  await dragLeft(700)
+  await waitWidth(420)
+  await until(() => dev.evaluate(() => JSON.parse(localStorage.getItem('cloudnote.ui')).leftWidth === 420), { what: '保存最大栏宽' })
+  await dev.reload()
+  await ui.waitReady(dev)
+  await waitWidth(420)
+  check('桌面：左栏最大 420px，刷新后保留', true)
+  await dragLeft(248)
+  await waitWidth(248)
+}
+
 async function checkSyncControls(label) {
   await until(() => dev.evaluate(() => !!document.querySelector('.peer-trigger')), { what: '在线端入口' })
   const m = await dev.evaluate(() => {
@@ -255,6 +306,10 @@ async function run() {
   await dev.type('二级标题')
   await enter()
   await dev.type('再来一段正文，够长一点，让大纲有东西可以点。')
+  await click('.tag-add')
+  await until(() => dev.evaluate(() => document.activeElement?.matches('.tag-input')), { what: '标签输入框' })
+  await dev.type('响应式标签')
+  await enter()
   // 等保存落库再切档：切档要重载页面，带着没发出去的改动重载会走冲突副本那条路，把树搞脏
   await ui.waitSynced(dev)
   const headings = await dev.evaluate(() => document.querySelectorAll('.ProseMirror h1, .ProseMirror h2').length)
@@ -451,6 +506,7 @@ async function run() {
       check(`${label} 目录树 248 宽`, m.left && Math.abs(m.left.width - 248) < 1, `width=${m.left?.width}`)
       check(`${label} 大纲 232 宽在原位`, m.right && Math.abs(m.right.width - 232) < 1 && m.right.position !== 'fixed', JSON.stringify(m.right))
       check(`${label} 没有遮罩`, !m.backdrop)
+      await checkDesktopSidebar()
     }
   }
 
