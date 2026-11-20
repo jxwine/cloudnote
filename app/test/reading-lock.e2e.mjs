@@ -128,6 +128,26 @@ try {
   await locked('私人笔记')
   await unlock('private123', 'PRIVATE_CONTENT')
   pass('错误密码拒绝，正确密码解锁')
+  await click('.workspace-home')
+  await wait('.recent-note')
+  const homeMarkup = await dev.evaluate(() => document.querySelector('.recent-pane').outerHTML)
+  assert.ok(homeMarkup.includes('公开笔记'))
+  for (const privateValue of ['私人笔记', 'PRIVATE_CONTENT', '重要账号', 'NESTED_SECRET', '个人资料']) {
+    assert.ok(!homeMarkup.includes(privateValue), '最近笔记不能泄露锁定笔记与父目录')
+  }
+  await dev.evaluate(() => {
+    const select = document.querySelector('.recent-view select')
+    select.value = 'folders-cards'
+    select.dispatchEvent(new Event('change', { bubbles: true }))
+  })
+  await clickText('.recent-folder .recent-item-title', '个**料')
+  await locked('个人资料')
+  await unlock('outer123')
+  await until(async () => (await text('#recent-title')) === '个人资料', { what: '最近页目录解锁后浏览' })
+  assert.ok((await text('.recent-pane')).includes('账**档'))
+  assert.ok(!(await text('.recent-pane')).includes('NESTED_SECRET'))
+  await click('.workspace-home')
+  pass('最近笔记过滤锁定内容，目录模式沿用脱敏与解锁')
   await openRow('公开笔记')
   await openRow('私**记')
   await locked('私人笔记')

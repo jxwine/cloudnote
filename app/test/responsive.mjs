@@ -182,6 +182,55 @@ async function checkDesktopSidebar() {
   await waitWidth(248)
 }
 
+async function checkRecentNotes() {
+  const showRecent = async () => {
+    await click('.workspace-home')
+    await until(() => dev.evaluate(() => !!document.querySelector('.recent-pane')), { what: '最近笔记页' })
+  }
+  const changeView = (value) => dev.evaluate((value) => {
+    const select = document.querySelector('.recent-view select')
+    select.value = value
+    select.dispatchEvent(new Event('change', { bubbles: true }))
+  }, value)
+  await showRecent()
+  check('桌面：首页卡片展示标题、摘要与日期', await dev.evaluate(() =>
+    !!document.querySelector('.recent-items--cards .recent-note .recent-item-title') &&
+    !!document.querySelector('.recent-note .recent-item-excerpt') &&
+    !!document.querySelector('.recent-note .recent-item-meta')))
+  await shot('desktop-recent-cards')
+  await dev.evaluate(() => { document.documentElement.dataset.theme = 'dark' })
+  await shot('desktop-recent-cards-dark')
+  await dev.evaluate(() => { document.documentElement.dataset.theme = 'light' })
+
+  await changeView('all-titles')
+  check('桌面：标题列表仅列出标题', await dev.evaluate(() =>
+    !!document.querySelector('.recent-items--titles .recent-note') &&
+    !document.querySelector('.recent-note .recent-item-excerpt, .recent-note .recent-item-meta')))
+  await changeView('folders-cards')
+  await click('.recent-folder')
+  check('桌面：目录模式可以浏览当前层，并返回上级', await dev.evaluate(() =>
+    !!document.querySelector('.recent-back') && document.querySelector('#recent-title').textContent.startsWith('目录')))
+  await click('.recent-back')
+  await changeView('all-details')
+  await until(() => dev.evaluate(() => JSON.parse(localStorage.getItem('cloudnote.ui'))?.activeNoteId === null), { what: '保存最近页状态' })
+  await dev.reload()
+  await ui.waitReady(dev)
+  check('桌面：刷新后恢复详细列表偏好', await dev.evaluate(() =>
+    document.querySelector('.recent-view select')?.value === 'all-details' && !!document.querySelector('.recent-note .recent-item-excerpt')))
+
+  await click('.titlebar [title^="目录栏"]')
+  await click('.recent-search')
+  await until(() => dev.evaluate(() => document.activeElement?.matches('.search-box input')), { what: '复用侧栏笔记搜索' })
+  check('桌面：最近笔记页的搜索可以展开并聚焦侧栏', !((await measure(dev)).left.width < 1))
+  await changeView('all-cards')
+  await dev.evaluate(() => [...document.querySelectorAll('.recent-note')].find((note) => note.textContent.includes('第二篇')).click())
+  await until(() => dev.evaluate(() => document.querySelector('.note-title')?.value === '第二篇'), { what: '从最近页打开笔记' })
+  await until(() => dev.evaluate(() => !!JSON.parse(localStorage.getItem('cloudnote.ui'))?.activeNoteId), { what: '保存已打开笔记' })
+  await dev.reload()
+  await ui.waitReady(dev)
+  check('桌面：从卡片进入编辑器后，刷新仍恢复该笔记', await dev.evaluate(() => document.querySelector('.note-title')?.value === '第二篇'))
+}
+
 async function checkSyncControls(label) {
   await until(() => dev.evaluate(() => !!document.querySelector('.peer-trigger')), { what: '在线端入口' })
   const m = await dev.evaluate(() => {
@@ -287,7 +336,9 @@ async function run() {
   // 先在桌面档造点内容：两篇笔记，第二篇带几个标题给大纲用。
   // 标题直接敲在标题框里（新建后它自动聚焦），别让正文的 # 标题被结算成笔记标题——
   // 那条路上有个和本次无关的老问题：刷新页面会多出一份冲突副本
-  await ui.newNote(dev)
+  check('桌面：空账号默认显示最近笔记', await dev.evaluate(() =>
+    document.querySelector('#recent-title')?.textContent === '最近笔记' && !!document.querySelector('.recent-empty')))
+  await click('.recent-create')
   await sleep(600)
   await dev.type('第一篇')
   await ui.focusBody(dev)
@@ -507,6 +558,7 @@ async function run() {
       check(`${label} 大纲 232 宽在原位`, m.right && Math.abs(m.right.width - 232) < 1 && m.right.position !== 'fixed', JSON.stringify(m.right))
       check(`${label} 没有遮罩`, !m.backdrop)
       await checkDesktopSidebar()
+      await checkRecentNotes()
     }
   }
 

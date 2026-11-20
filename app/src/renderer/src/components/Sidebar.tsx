@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from 'react'
+import { useCallback, useMemo, useRef, useState, type RefObject } from 'react'
 import { useStore, useBindings, buildTree, type TreeNode } from '@/lib/store'
 import { formatCombo } from '@/lib/shortcuts'
 import * as sync from '@/lib/sync'
@@ -24,7 +24,7 @@ const DND_MIME = 'application/x-cloudnote'
 /** 拖着悬停在折叠的目录上多久自动展开 */
 const HOVER_EXPAND_MS = 700
 
-export function Sidebar() {
+export function Sidebar({ searchInputRef }: { searchInputRef: RefObject<HTMLInputElement> }) {
   const bindings = useBindings()
   const lockGrants = useStore((s) => s.lockGrants)
   const folders = useStore((s) => s.folders)
@@ -293,6 +293,7 @@ export function Sidebar() {
           <div className="search-box">
             <IconSearch size={15} />
             <input
+              ref={searchInputRef}
               value={search}
               placeholder="搜索笔记"
               onChange={(e) => setSearch(e.target.value)}

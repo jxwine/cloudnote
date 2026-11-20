@@ -8,6 +8,7 @@ import { Sidebar } from './components/Sidebar'
 import { ReadingLockDialog, ReadingLockPane } from './components/ReadingLock'
 import { blockedLock } from '@/lib/readingLock'
 import { EditorPane } from './components/Editor'
+import { RecentNotes } from './components/RecentNotes'
 import { Outline } from './components/Outline'
 import { SyncChip } from './components/SyncChip'
 import { Toast } from './components/Toast'
@@ -19,7 +20,7 @@ import { UpdateDialog } from './components/UpdateDialog'
 import { AdminApp } from './components/admin/AdminApp'
 import { MobileShell } from './components/mobile/MobileShell'
 import { useSyncLifecycle } from '@/lib/useSyncLifecycle'
-import { desktop, isDesktop } from '@/lib/platform'
+import { desktop, isDesktop, isIOS, isNative } from '@/lib/platform'
 import { isTouch, watchViewport } from '@/lib/viewport'
 import { useUpdateCheck } from '@/lib/useUpdateCheck'
 import { DownloadLinks, IOS_ROUTE } from './components/DownloadLinks'
@@ -169,11 +170,18 @@ function Workspace() {
   const rightWidth = useStore((s) => s.rightWidth)
   const activeNoteId = useStore((s) => s.activeNoteId)
   const activeFolderId = useStore((s) => s.activeFolderId)
+  const hasActiveNote = useStore((s) => {
+    const note = s.activeNoteId ? s.notes[s.activeNoteId] : undefined
+    return !!note && !note.deleted
+  })
+  const setActive = useStore((s) => s.setActive)
   const noteLocked = useStore((s) => !!s.activeNoteId && !!blockedLock(s, { kind: 'note', id: s.activeNoteId }))
   const user = useStore((s) => s.user)
   const viewport = useStore((s) => s.viewport)
   const drawer = useStore((s) => s.drawer)
   const setDrawer = useStore((s) => s.setDrawer)
+  const supportsRecent = !isNative && !isIOS && !/Android/i.test(navigator.userAgent)
+  const showRecent = supportsRecent && !activeFolderId && !hasActiveNote
 
   /*
    * 平板上大纲是覆盖式抽屉（目录树留在原位）；桌面都不是。
@@ -206,8 +214,10 @@ function Workspace() {
   const [editor, setEditor] = useState<Editor | null>(null)
   const [quickJump, setQuickJump] = useState(false)
   const [settings, setSettings] = useState(false)
+  const [recentFolderId, setRecentFolderId] = useState<string | null>(null)
   const { update, setUpdate, available, manualCheck } = useUpdateCheck()
   const scrollRef = useRef<HTMLDivElement>(null)
+  const searchInputRef = useRef<HTMLInputElement>(null)
 
   const onEditorReady = useCallback((e: Editor | null) => setEditor(e), [])
 
@@ -239,10 +249,17 @@ function Workspace() {
   return (
     <div className="app">
       <header className="titlebar">
-        <span className="brand">
-          <IconCloud size={15} className="brand-mark" />
-          云笔记
-        </span>
+        {supportsRecent ? (
+          <button type="button" className="brand workspace-home" aria-label="返回最近笔记" title="返回最近笔记" onClick={() => {
+            setRecentFolderId(null)
+            setActive(null)
+          }}>
+            <IconCloud size={15} className="brand-mark" />
+            云笔记
+          </button>
+        ) : (
+          <span className="brand"><IconCloud size={15} className="brand-mark" />云笔记</span>
+        )}
 
         <div className="titlebar-group titlebar-panels" role="group" aria-label="侧栏开关">
           <button
@@ -291,11 +308,17 @@ function Workspace() {
           className={'panel panel-left' + (leftShown ? '' : ' is-collapsed')}
           style={{ width: leftWidth, maxWidth: leftMaxWidth }}
         >
-          <Sidebar />
+          <Sidebar searchInputRef={searchInputRef} />
         </aside>
         {leftShown && <Resizer side="left" />}
 
-        {activeFolderId ? <ReadingLockPane target={{ kind: 'folder', id: activeFolderId }} /> : <EditorPane onEditorReady={onEditorReady} scrollRef={scrollRef} />}
+        {activeFolderId ? <ReadingLockPane target={{ kind: 'folder', id: activeFolderId }} /> : showRecent ? (
+          <RecentNotes folderId={recentFolderId} onFolderChange={setRecentFolderId} onSearch={() => {
+            useStore.getState().setSidebarView('tree')
+            if (!leftShown) toggleSide('left', true)
+            requestAnimationFrame(() => searchInputRef.current?.focus())
+          }} />
+        ) : <EditorPane onEditorReady={onEditorReady} scrollRef={scrollRef} />}
 
         {rightShown && !rightAsDrawer && <Resizer side="right" />}
         <aside
@@ -307,7 +330,7 @@ function Workspace() {
           </div>
           <div className="panel-body">
             <Outline
-              editor={activeFolderId || noteLocked ? null : editor}
+              editor={showRecent || activeFolderId || noteLocked ? null : editor}
               scrollRef={scrollRef}
               noteId={activeFolderId || noteLocked ? null : activeNoteId}
               onNavigate={rightAsDrawer ? () => setDrawer(null) : undefined}
