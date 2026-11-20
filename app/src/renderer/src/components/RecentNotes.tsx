@@ -1,5 +1,5 @@
 import { useMemo, useState, type ReactNode } from 'react'
-import { blockedLock, canReadNote, readingTitle } from '@/lib/readingLock'
+import { blockedLock, readingTitle } from '@/lib/readingLock'
 import { formatDate } from '@/lib/search'
 import { useStore } from '@/lib/store'
 import * as sync from '@/lib/sync'
@@ -63,13 +63,19 @@ export function RecentNotes({ folderId, onFolderChange, onSearch }: Props) {
         return { id: item.id, title: readingTitle(state, target), locked: !!blockedLock(state, target) }
       }) : []
     const recent = Object.values(notes)
-      .filter((note) => !note.deleted && (!byFolder || isHere(note.folderId)) && canReadNote(state, note))
-      .sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id))
+      .filter((note) => !note.deleted && (!byFolder || isHere(note.folderId)))
+      .flatMap((note) => {
+        const target = { kind: 'note' as const, id: note.id }
+        const blocking = blockedLock(state, target)
+        if (blocking?.kind === 'folder') return []
+        return [{ note, locked: !!blocking, title: blocking ? readingTitle(state, target) : note.title?.trim() || '' }]
+      })
+      .sort((a, b) => b.note.updatedAt - a.note.updatedAt || a.note.id.localeCompare(b.note.id))
     return { currentFolder, childFolders, recent }
   }, [notes, folders, lockGrants, byFolder, folderId])
 
   const sizes = useMemo(() => showSizes
-    ? new Map(recent.map((note) => [note.id, formatBytes(new Blob([note.content ?? '']).size, 1)]))
+    ? new Map(recent.map(({ note }) => [note.id, formatBytes(new Blob([note.content ?? '']).size, 1)]))
     : null, [recent, showSizes])
 
   const title = currentFolder?.name || (byFolder ? '目录' : '最近笔记')
@@ -160,17 +166,33 @@ export function RecentNotes({ folderId, onFolderChange, onSearch }: Props) {
               },
               folder.locked,
             ))}
-            {recent.map((note) => renderItem(
-              { kind: 'note', id: note.id }, note.title?.trim() || '', layout !== 'cards' && <IconNote size={16} />,
-              <>
-                {layout !== 'titles' && note.excerpt && <span className="recent-item-excerpt">{note.excerpt}</span>}
-                <span className="recent-item-meta">
-                  <span>{formatDate(note.updatedAt)}</span>
-                  {sizes && <span className="recent-item-size" title="笔记大小">{sizes.get(note.id)}</span>}
-                </span>
-              </>,
-              () => setActive(note.id),
-            ))}
+            {recent.map(({ note, locked, title }) => {
+              const lockedCard = locked && layout === 'cards'
+              const excerpt = locked ? '内容已锁定' : note.excerpt
+              return renderItem(
+                { kind: 'note', id: note.id }, title, layout !== 'cards' && <IconNote size={16} />,
+                lockedCard ? (
+                  <span className="recent-item-lock-preview" role="img" aria-label="内容已锁定">
+                    <IconLock size={48} />
+                  </span>
+                ) : (
+                  <>
+                    {layout !== 'titles' && excerpt && <span className="recent-item-excerpt">{excerpt}</span>}
+                    <span className="recent-item-meta">
+                      {locked && (
+                        <span className="recent-item-lock" role="img" aria-label="已锁定" title="已锁定">
+                          <IconLock size={14} />
+                        </span>
+                      )}
+                      <span>{formatDate(note.updatedAt)}</span>
+                      {sizes && <span className="recent-item-size" title="笔记大小">{sizes.get(note.id)}</span>}
+                    </span>
+                  </>
+                ),
+                () => setActive(note.id),
+                locked,
+              )
+            })}
           </div>
         ) : (
           <div className="recent-empty">

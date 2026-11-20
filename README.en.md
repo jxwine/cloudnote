@@ -97,7 +97,7 @@ On Windows and desktop web, Recent Notes appears when no note is open. Notes are
 
 Use the view picker to browse all notes or folders, with summary cards, a detailed list, or a title list. The detailed list includes excerpts. Both lists show the last edited date and the size of the saved note body in UTF-8.
 
-Right-click a note or folder to open the same menu as in the sidebar. Rename items in place or use the menu to export, delete, or manage reading passwords. Recent Notes hides locked notes and masks locked folder names until unlocked.
+Right-click a note or folder to open the same menu as in the sidebar. Rename items in place or use the menu to export, delete, or manage reading passwords. Locked notes appear with a masked title and a lock icon. Detailed lists show “Content locked” in place of the excerpt, and both list views show the date and size. Click a locked note to unlock it. Notes inside protected folders appear after the folder is unlocked.
 
 ![Recent Notes title list with dates, sizes, and a context menu](screenshot-recent-list.png)
 

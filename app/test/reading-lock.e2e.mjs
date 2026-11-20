@@ -41,6 +41,11 @@ const clickText = (selector, label) => dev.evaluate((s, label) => {
   if (!element) throw new Error(`找不到 ${s}: ${label}`)
   element.click()
 }, selector, label)
+const selectRecentView = (view) => dev.evaluate((value) => {
+  const select = document.querySelector('.recent-view select')
+  select.value = value
+  select.dispatchEvent(new Event('change', { bubbles: true }))
+}, view)
 const fill = async (selector, value) => {
   await dev.evaluate((s) => { const el = document.querySelector(s); if (!el) throw new Error(s); el.focus(); el.select() }, selector)
   await dev.type(value)
@@ -130,16 +135,50 @@ try {
   pass('错误密码拒绝，正确密码解锁')
   await click('.workspace-home')
   await wait('.recent-note')
-  const homeMarkup = await dev.evaluate(() => document.querySelector('.recent-pane').outerHTML)
-  assert.ok(homeMarkup.includes('公开笔记'))
-  for (const privateValue of ['私人笔记', 'PRIVATE_CONTENT', '重要账号', 'NESTED_SECRET', '个人资料']) {
-    assert.ok(!homeMarkup.includes(privateValue), '最近笔记不能泄露锁定笔记与父目录')
+  let lockedDate
+  for (const scope of ['all', 'folders']) {
+    for (const layout of ['cards', 'details', 'titles']) {
+      await selectRecentView(`${scope}-${layout}`)
+      await wait(`.recent-items--${layout}`)
+      const home = await dev.evaluate((maskedTitle) => {
+        const pane = document.querySelector('.recent-pane')
+        const rows = [...pane.querySelectorAll('.recent-note')]
+        const row = rows.find((item) => item.querySelector('.recent-item-title').textContent.trim() === maskedTitle)
+        const meta = row?.querySelector('.recent-item-meta')
+        return {
+          markup: pane.outerHTML,
+          count: rows.length,
+          hasCardLock: !!row?.querySelector('.recent-item-lock-preview svg'),
+          hasRowLock: !!meta?.querySelector('.recent-item-lock:first-child svg'),
+          excerpt: row?.querySelector('.recent-item-excerpt')?.textContent ?? null,
+          date: meta?.querySelector('.recent-item-lock + span')?.textContent ?? null,
+          size: meta?.querySelector('.recent-item-size')?.textContent ?? null,
+        }
+      }, MASKED_TITLES['私人笔记'])
+      assert.ok(home.markup.includes('公开笔记') && home.markup.includes('私**记'))
+      assert.equal(home.count, 2, '上级目录被锁定时不应显示内部笔记或其元数据')
+      for (const privateValue of ['私人笔记', '隐私标题', 'PRIVATE_CONTENT', '重要账号', '重**号', 'NESTED_SECRET', '个人资料']) {
+        assert.ok(!home.markup.includes(privateValue), '最近笔记不能泄露锁定笔记与父目录')
+      }
+      assert.equal(home.hasCardLock, layout === 'cards')
+      assert.equal(home.hasRowLock, layout !== 'cards')
+      assert.equal(home.excerpt, layout === 'details' ? '内容已锁定' : null)
+      if (layout !== 'cards') {
+        assert.match(home.date, /^\d{4}\.\d{2}\.\d{2}$/)
+        lockedDate ??= home.date
+        assert.equal(home.date, lockedDate)
+        assert.equal(home.size, `${Buffer.byteLength(secret.content)} B`)
+      }
+    }
   }
-  await dev.evaluate(() => {
-    const select = document.querySelector('.recent-view select')
-    select.value = 'folders-cards'
-    select.dispatchEvent(new Event('change', { bubbles: true }))
-  })
+  await clickText('.recent-note .recent-item-title', '私**记')
+  await locked('私人笔记')
+  await unlock('private123', 'PRIVATE_CONTENT')
+  await click('.workspace-home')
+  await wait('.recent-pane')
+  pass('最近笔记六种显示组合均脱敏，卡片与列表展示锁定状态，点击后可解锁')
+  await selectRecentView('folders-cards')
+  await wait('.recent-items--cards .recent-folder')
   const lockedFolderMenu = await dev.evaluate(() => {
     const folder = document.querySelector('.recent-folder')
     folder.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }))
@@ -157,7 +196,7 @@ try {
   assert.ok((await text('.recent-pane')).includes('账**档'))
   assert.ok(!(await text('.recent-pane')).includes('NESTED_SECRET'))
   await click('.workspace-home')
-  pass('最近笔记过滤锁定内容，目录模式沿用脱敏与解锁')
+  pass('最近笔记隐藏锁定目录的内部笔记，目录模式沿用脱敏与解锁')
   await openRow('公开笔记')
   await openRow('私**记')
   await locked('私人笔记')
