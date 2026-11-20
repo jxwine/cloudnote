@@ -140,6 +140,16 @@ try {
     select.value = 'folders-cards'
     select.dispatchEvent(new Event('change', { bubbles: true }))
   })
+  const lockedFolderMenu = await dev.evaluate(() => {
+    const folder = document.querySelector('.recent-folder')
+    folder.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }))
+  }).then(async () => {
+    await wait('.menu')
+    return dev.evaluate(() => Object.fromEntries([...document.querySelectorAll('.menu-item')].map((item) => [item.textContent, item.disabled])))
+  })
+  for (const label of ['立即上锁', '重命名', '在此新建笔记', '新建子目录', '导出这个目录', '删除目录']) assert.equal(lockedFolderMenu[label], true)
+  assert.equal(lockedFolderMenu['重设阅读密码'], false)
+  await dev.evaluate(() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })))
   await clickText('.recent-folder .recent-item-title', '个**料')
   await locked('个人资料')
   await unlock('outer123')

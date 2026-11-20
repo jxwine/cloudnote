@@ -2,22 +2,23 @@ import { useCallback, useMemo, useRef, useState, type RefObject } from 'react'
 import { useStore, useBindings, buildTree, type TreeNode } from '@/lib/store'
 import { formatCombo } from '@/lib/shortcuts'
 import * as sync from '@/lib/sync'
-import { exportAll, exportNote } from '@/lib/export'
+import { exportAll } from '@/lib/export'
 import { blockedLock, canReadNote, hasReadingLock, readingTitle } from '@/lib/readingLock'
-import { readingLockMenuActions } from './ReadingLock'
 import type { Note } from '@/lib/types'
 import {
   canDrop, orderBetween, parentOf, positionInRow, siblingsOf,
   type DragPayload, type DropPosition, type DropTarget,
 } from '@/lib/dnd'
-import { useContextMenu, type MenuAction } from './ContextMenu'
+import { useContextMenu } from './ContextMenu'
+import { desktopItemActions } from './desktopItemActions'
+import { RenameInput } from './RenameInput'
 import { isTouch } from '@/lib/viewport'
 import { SearchResults } from './SearchResults'
 import { Trash } from './Trash'
 import { TagList } from './TagList'
 import {
   IconLock, IconUnlock, IconChevron, IconFolder, IconFolderOpen, IconNote, IconPlus, IconFolderPlus,
-  IconSearch, IconTrash, IconPencil, IconClose, IconMore, IconTag, IconExport, IconChevron as IconBack,
+  IconSearch, IconTrash, IconClose, IconMore, IconTag, IconExport, IconChevron as IconBack,
 } from './Icons'
 
 const DND_MIME = 'application/x-cloudnote'
@@ -392,25 +393,7 @@ function FolderRow(props: {
   const openFolder = useStore((s) => s.openFolder)
   const count = node.notes.length + node.children.length
 
-  const actions: (MenuAction | 'separator')[] = [
-    ...readingLockMenuActions(target),
-    'separator',
-    { disabled: locked, label: '在此新建笔记', icon: <IconNote size={16} />, onSelect: () => void sync.createNote(node.folder.id) },
-    { disabled: locked, label: '新建子目录', icon: <IconFolderPlus size={16} />, onSelect: () => void sync.createFolder('新建目录', node.folder.id) },
-    'separator',
-    { disabled: locked, label: '重命名', icon: <IconPencil size={16} />, onSelect: props.onStartRename },
-    {
-      label: '导出这个目录', disabled: locked,
-      icon: <IconExport size={16} />,
-      onSelect: () => void exportAll({ folderId: node.folder.id }),
-    },
-    {
-      label: '删除目录', disabled: locked,
-      icon: <IconTrash size={16} />,
-      danger: true,
-      onSelect: () => void sync.deleteFolder(node.folder.id),
-    },
-  ]
+  const actions = () => desktopItemActions(target, props.onStartRename)
 
   return (
     <>
@@ -422,7 +405,7 @@ function FolderRow(props: {
         }
         style={{ paddingLeft: 6 + depth * 16 }}
         onClick={() => openFolder(node.folder.id)}
-        onContextMenu={(e) => menu.open(e, actions)}
+        onContextMenu={(e) => menu.open(e, actions())}
         title={title}
         {...dragProps}
         {...dropProps}
@@ -471,7 +454,7 @@ function FolderRow(props: {
                 title="更多"
                 onClick={(e) => {
                   e.stopPropagation()
-                  menu.openAt(e.currentTarget, actions)
+                  menu.openAt(e.currentTarget, actions())
                 }}
               >
                 <IconMore size={16} />
@@ -506,22 +489,14 @@ function NoteRow(props: {
   const protectedItem = useStore((s) => hasReadingLock(s, target))
   const title = useStore((s) => readingTitle(s, target))
 
-  const actions: (MenuAction | 'separator')[] = [
-    ...readingLockMenuActions(target),
-    'separator',
-    { disabled: locked, label: '重命名', icon: <IconPencil size={16} />, onSelect: props.onStartRename },
-    { disabled: locked, label: '移出目录', icon: <IconFolder size={16} />, onSelect: () => void sync.moveNote(note.id, null) },
-    { disabled: locked, label: '导出', icon: <IconExport size={16} />, onSelect: () => void exportNote(note) },
-    'separator',
-    { disabled: locked, label: '删除笔记', icon: <IconTrash size={16} />, danger: true, onSelect: () => void sync.deleteNote(note.id) },
-  ]
+  const actions = () => desktopItemActions(target, props.onStartRename)
 
   return (
     <div
       className={'tree-row is-note' + (active ? ' is-active' : '') + (dragging ? ' is-dragging' : '')}
       style={{ paddingLeft: 28 + depth * 16 }}
       onClick={() => setActive(note.id)}
-      onContextMenu={(e) => menu.open(e, actions)}
+      onContextMenu={(e) => menu.open(e, actions())}
       title={title || '无标题'}
       {...dragProps}
       {...dropProps}
@@ -545,7 +520,7 @@ function NoteRow(props: {
               title="更多"
               onClick={(e) => {
                 e.stopPropagation()
-                menu.openAt(e.currentTarget, actions)
+                menu.openAt(e.currentTarget, actions())
               }}
             >
               <IconMore size={16} />
@@ -554,22 +529,5 @@ function NoteRow(props: {
         </>
       )}
     </div>
-  )
-}
-
-function RenameInput({ initial, onCommit }: { initial: string; onCommit: (v: string) => void }) {
-  return (
-    <input
-      className="tree-rename"
-      defaultValue={initial}
-      autoFocus
-      onFocus={(e) => e.currentTarget.select()}
-      onClick={(e) => e.stopPropagation()}
-      onBlur={(e) => onCommit(e.currentTarget.value.trim())}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter') e.currentTarget.blur()
-        if (e.key === 'Escape') onCommit('')
-      }}
-    />
   )
 }

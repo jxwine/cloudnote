@@ -112,5 +112,5 @@ export function useContextMenu() {
   }
 
   const node = state ? <ContextMenu {...state} onClose={() => setState(null)} /> : null
-  return { open, openAt, node }
+  return { open, openAt, close: () => setState(null), node }
 }

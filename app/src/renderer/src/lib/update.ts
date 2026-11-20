@@ -155,9 +155,9 @@ export async function downloadClient(platform: 'android' | 'win32'): Promise<voi
   a.click()
 }
 
-export function formatBytes(n: number): string {
+export function formatBytes(n: number, kilobyteDecimals = 0): string {
   if (n < 1024) return `${n} B`
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(kilobyteDecimals)} KB`
   if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`
   return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`
 }

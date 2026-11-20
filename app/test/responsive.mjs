@@ -192,6 +192,22 @@ async function checkRecentNotes() {
     select.value = value
     select.dispatchEvent(new Event('change', { bubbles: true }))
   }, value)
+  const rightClick = async (selector) => {
+    const point = await dev.evaluate((selector) => {
+      const rect = document.querySelector(selector).getBoundingClientRect()
+      return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 }
+    }, selector)
+    await dev.send('Input.dispatchMouseEvent', { type: 'mousePressed', button: 'right', buttons: 2, clickCount: 1, ...point })
+    await dev.send('Input.dispatchMouseEvent', { type: 'mouseReleased', button: 'right', buttons: 0, clickCount: 1, ...point })
+  }
+  const menuLabels = () => dev.evaluate(() => [...document.querySelectorAll('.menu-item')].map((item) => item.textContent))
+  const rename = async (name) => {
+    await dev.evaluate(() => [...document.querySelectorAll('.menu-item')].find((item) => item.textContent === '重命名').click())
+    await until(() => dev.evaluate(() => document.activeElement?.matches('.recent-item input')), { what: '最近页行内改名' })
+    await dev.type(name)
+    await enter()
+    await until(() => dev.evaluate((name) => [...document.querySelectorAll('.recent-item-title')].some((item) => item.textContent === name), name), { what: '最近页显示改名后的条目' })
+  }
   await showRecent()
   check('桌面：首页卡片展示标题、摘要与日期', await dev.evaluate(() =>
     !!document.querySelector('.recent-items--cards .recent-note .recent-item-title') &&
@@ -202,16 +218,43 @@ async function checkRecentNotes() {
   await shot('desktop-recent-cards-dark')
   await dev.evaluate(() => { document.documentElement.dataset.theme = 'light' })
 
+  await rightClick('.tree-row.is-note')
+  const noteMenu = await menuLabels()
+  await press('Escape', 'Escape', 27)
+  await rightClick('.recent-note')
+  check('桌面：卡片右键与左栏笔记菜单一致，右键不打开编辑器', await dev.evaluate(() =>
+    !!document.querySelector('#recent-title')) && noteMenu.includes('删除笔记') && JSON.stringify(await menuLabels()) === JSON.stringify(noteMenu))
+  await rename('最近页改名笔记')
+
   await changeView('all-titles')
-  check('桌面：标题列表仅列出标题', await dev.evaluate(() =>
+  check('桌面：标题列表显示标题、日期和大小，不展示摘要', await dev.evaluate(() =>
     !!document.querySelector('.recent-items--titles .recent-note') &&
-    !document.querySelector('.recent-note .recent-item-excerpt, .recent-note .recent-item-meta')))
+    !document.querySelector('.recent-note .recent-item-excerpt') &&
+    [...document.querySelectorAll('.recent-note .recent-item-meta')].every((meta) => {
+      const [date, size] = meta.children
+      return /\d{4}\.\d{2}\.\d{2}/.test(date.textContent) && /^\d+(\.\d+)? (B|KB|MB|GB)$/.test(size.textContent)
+    })))
+  await shot('desktop-recent-title-sizes')
+  await rightClick('.recent-note')
+  check('桌面：标题列表可打开右键菜单', JSON.stringify(await menuLabels()) === JSON.stringify(noteMenu))
+  await press('Escape', 'Escape', 27)
   await changeView('folders-cards')
+  await rightClick('.tree-row.is-folder')
+  const folderMenu = await menuLabels()
+  await press('Escape', 'Escape', 27)
+  await rightClick('.recent-folder')
+  check('桌面：目录右键菜单和左栏一致', folderMenu.includes('新建子目录') && JSON.stringify(await menuLabels()) === JSON.stringify(folderMenu))
+  await rename('目录右键验证')
   await click('.recent-folder')
   check('桌面：目录模式可以浏览当前层，并返回上级', await dev.evaluate(() =>
     !!document.querySelector('.recent-back') && document.querySelector('#recent-title').textContent.startsWith('目录')))
   await click('.recent-back')
   await changeView('all-details')
+  await rightClick('.recent-note')
+  check('桌面：详细列表显示大小且右键菜单一致', JSON.stringify(await menuLabels()) === JSON.stringify(noteMenu) &&
+    await dev.evaluate(() => !!document.querySelector('.recent-note .recent-item-size')))
+  await press('Escape', 'Escape', 27)
+  await shot('desktop-recent-detail-sizes')
   await until(() => dev.evaluate(() => JSON.parse(localStorage.getItem('cloudnote.ui'))?.activeNoteId === null), { what: '保存最近页状态' })
   await dev.reload()
   await ui.waitReady(dev)

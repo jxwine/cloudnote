@@ -6,17 +6,18 @@
 
 **English** | [简体中文](README.md)
 
-A self-hosted desktop note app: folder tree on the left, editor in the middle,
-auto-generated outline on the right, synced across devices in real time.
+A self-hosted note app for Windows, web, and mobile. The desktop workspace has a
+folder tree on the left, recent notes or an editor in the middle, and a live outline on the right.
 
 Your data stays on your own server — one Node process and one SQLite file.
 No native modules, no external database, no third-party service.
 
-![Interface](screenshot-light.png)
+![Recent Notes desktop home with summary cards](screenshot-recent.png)
 
 ## What it does
 
 - **Three-pane layout**, both side panes collapsible and resizable
+- **Recent notes** by last edit, with summary cards, a detailed list, a title list, and folder browsing
 - **Real-time sync** over WebSocket. If another device is *reading*, it hot-updates.
   If it is *editing*, the incoming cloud version is archived as a conflict copy — neither side is lost.
 - **Works offline**: keep editing while disconnected; the queue replays and reconciles on reconnect
@@ -90,6 +91,16 @@ note/
     └── keystore/       Signing key (jks and passwords stay out of git — back them up)
 ```
 
+## Recent notes
+
+On Windows and desktop web, Recent Notes appears when no note is open. Notes are ordered by last edit. Click a card or row to open the note, and click the CloudNote logo to return home. Refreshing the web app restores the open note.
+
+Use the view picker to browse all notes or folders, with summary cards, a detailed list, or a title list. The detailed list includes excerpts. Both lists show the last edited date and the size of the saved note body in UTF-8.
+
+Right-click a note or folder to open the same menu as in the sidebar. Rename items in place or use the menu to export, delete, or manage reading passwords. Recent Notes hides locked notes and masks locked folder names until unlocked.
+
+![Recent Notes title list with dates, sizes, and a context menu](screenshot-recent-list.png)
+
 ## Folder tree
 
 Create folders and subfolders, rename, delete — from the right-click menu or the buttons at the end of each row.
@@ -112,9 +123,8 @@ Folders are single-membership; tags are for cross-cutting classification.
 
 ![Tags](screenshot-tags.png)
 
-**Trash**: deletion is soft. Notes go to the trash first. The trash button in the title bar
-(with a pending count) opens it; from there you can restore or delete permanently (irreversible).
-Click the button again to go back to the note list.
+**Trash** is a sidebar tab with a count of deleted notes. Open it to restore a note or delete it permanently.
+Click the Notes tab to return to the folder tree.
 
 ![Trash](screenshot-trash.png)
 
@@ -225,7 +235,9 @@ Right-click → rename in the sidebar edits the very same field.
 
 ## Editor
 
-Built on Tiptap (ProseMirror), with Markdown-style input applied as you type:
+Built on Tiptap (ProseMirror), with Markdown-style input applied as you type.
+
+![Light desktop editor with the folder tree and outline](screenshot-light.png)
 
 | Input | Result | | Input | Result |
 |---|---|---|---|---|

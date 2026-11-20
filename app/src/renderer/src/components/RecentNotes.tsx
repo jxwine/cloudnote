@@ -1,9 +1,14 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useState, type ReactNode } from 'react'
 import { blockedLock, canReadNote, readingTitle } from '@/lib/readingLock'
 import { formatDate } from '@/lib/search'
 import { useStore } from '@/lib/store'
 import * as sync from '@/lib/sync'
+import type { LockTarget } from '@/lib/types'
+import { formatBytes } from '@/lib/update'
+import { useContextMenu } from './ContextMenu'
+import { desktopItemActions } from './desktopItemActions'
 import { IconBack, IconChevronDown, IconFolder, IconList, IconLock, IconNote, IconPlus, IconSearch } from './Icons'
+import { RenameInput } from './RenameInput'
 
 const VIEW_KEY = 'cloudnote.recentView'
 const SCOPES = [{ id: 'all', label: '全部笔记' }, { id: 'folders', label: '目录层级' }] as const
@@ -36,8 +41,11 @@ export function RecentNotes({ folderId, onFolderChange, onSearch }: Props) {
   const setActive = useStore((state) => state.setActive)
   const openFolder = useStore((state) => state.openFolder)
   const [view, setView] = useState(readView)
+  const [renameTarget, setRenameTarget] = useState<LockTarget | null>(null)
+  const menu = useContextMenu()
   const [scope, layout] = view.split('-')
   const byFolder = scope === 'folders'
+  const showSizes = layout !== 'cards'
 
   const { currentFolder, childFolders, recent } = useMemo(() => {
     const state = { notes, folders, lockGrants }
@@ -60,11 +68,40 @@ export function RecentNotes({ folderId, onFolderChange, onSearch }: Props) {
     return { currentFolder, childFolders, recent }
   }, [notes, folders, lockGrants, byFolder, folderId])
 
+  const sizes = useMemo(() => showSizes
+    ? new Map(recent.map((note) => [note.id, formatBytes(new Blob([note.content ?? '']).size, 1)]))
+    : null, [recent, showSizes])
+
   const title = currentFolder?.name || (byFolder ? '目录' : '最近笔记')
   const hasItems = recent.length > 0 || childFolders.length > 0
 
+  const renderItem = (target: LockTarget, initial: string, icon: ReactNode, details: ReactNode, onOpen: () => void, locked = false) => {
+    const renaming = !locked && renameTarget?.kind === target.kind && renameTarget.id === target.id
+    const Item = renaming ? 'div' : 'button'
+    const commitRename = (name: string) => {
+      setRenameTarget(null)
+      if (!name || name === initial) return
+      const current = useStore.getState()
+      const item = target.kind === 'folder' ? current.folders[target.id] : current.notes[target.id]
+      if (!item || item.deleted || blockedLock(current, target)) return
+      if (target.kind === 'folder') void sync.renameFolder(target.id, name)
+      else void sync.renameNote(target.id, name)
+    }
+    return (
+      <Item key={`${target.kind}-${target.id}`} className={`recent-item recent-${target.kind}`}
+        type={renaming ? undefined : 'button'} onClick={renaming ? undefined : onOpen}
+        onContextMenu={renaming ? undefined : (event) => menu.open(event, desktopItemActions(target, () => setRenameTarget(target)))}>
+        <span className="recent-item-title">
+          {icon}
+          {renaming ? <RenameInput initial={initial} onCommit={commitRename} /> : <span>{initial || '无标题'}</span>}
+        </span>
+        {details}
+      </Item>
+    )
+  }
+
   return (
-    <main className="editor-pane recent-pane" aria-labelledby="recent-title">
+    <main className="editor-pane recent-pane" aria-labelledby="recent-title" onScroll={menu.close}>
       <div className="recent-content">
         <header className="recent-header">
           <div className="recent-heading">
@@ -95,6 +132,7 @@ export function RecentNotes({ folderId, onFolderChange, onSearch }: Props) {
             <IconList size={16} />
             <select aria-label="显示方式" value={view} onChange={(event) => {
               const next = event.target.value as View
+              setRenameTarget(null)
               setView(next)
               try { localStorage.setItem(VIEW_KEY, next) } catch { /* 当前窗口继续使用新视图。 */ }
             }}>
@@ -112,31 +150,26 @@ export function RecentNotes({ folderId, onFolderChange, onSearch }: Props) {
 
         {hasItems ? (
           <div className={`recent-items recent-items--${layout}`}>
-            {childFolders.map((folder) => (
-              <button key={`folder-${folder.id}`} type="button" className="recent-item recent-folder" onClick={() => {
+            {childFolders.map((folder) => renderItem(
+              { kind: 'folder', id: folder.id }, folder.title,
+              folder.locked ? <IconLock size={16} /> : <IconFolder size={17} />,
+              layout !== 'titles' && <span className="recent-item-meta">{folder.locked ? '需阅读密码' : '目录'}</span>,
+              () => {
                 onFolderChange(folder.id)
                 if (folder.locked) openFolder(folder.id)
-              }}>
-                <span className="recent-item-title">
-                  {folder.locked ? <IconLock size={16} /> : <IconFolder size={17} />}
-                  <span>{folder.title}</span>
-                </span>
-                {layout !== 'titles' && <span className="recent-item-meta">{folder.locked ? '需阅读密码' : '目录'}</span>}
-              </button>
+              },
+              folder.locked,
             ))}
-            {recent.map((note) => (
-              <button key={note.id} type="button" className="recent-item recent-note" onClick={() => setActive(note.id)}>
-                <span className="recent-item-title">
-                  {layout !== 'cards' && <IconNote size={16} />}
-                  <span>{note.title?.trim() || '无标题'}</span>
+            {recent.map((note) => renderItem(
+              { kind: 'note', id: note.id }, note.title?.trim() || '', layout !== 'cards' && <IconNote size={16} />,
+              <>
+                {layout !== 'titles' && note.excerpt && <span className="recent-item-excerpt">{note.excerpt}</span>}
+                <span className="recent-item-meta">
+                  <span>{formatDate(note.updatedAt)}</span>
+                  {sizes && <span className="recent-item-size" title="笔记大小">{sizes.get(note.id)}</span>}
                 </span>
-                {layout !== 'titles' && (
-                  <>
-                    {note.excerpt && <span className="recent-item-excerpt">{note.excerpt}</span>}
-                    <span className="recent-item-meta">{formatDate(note.updatedAt)}</span>
-                  </>
-                )}
-              </button>
+              </>,
+              () => setActive(note.id),
             ))}
           </div>
         ) : (
@@ -146,6 +179,7 @@ export function RecentNotes({ folderId, onFolderChange, onSearch }: Props) {
           </div>
         )}
       </div>
+      {menu.node}
     </main>
   )
 }
